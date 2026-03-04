@@ -1,0 +1,31 @@
+{
+	"$schema": "https://biomejs.dev/schemas/2.4.5/schema.json",
+	"formatter": {
+		"indentStyle": "tab",
+		"lineWidth": 100
+	},
+	"linter": {
+		"enabled": true,
+		"rules": {
+			"recommended": true
+		}
+	},
+	"assist": {
+		"actions": {
+			"source": {
+				"organizeImports": {
+					"level": "on"
+				}
+			}
+		}
+	},
+	"javascript": {
+		"formatter": {
+			"quoteStyle": "single",
+			"semicolons": "always"
+		}
+	},
+	"files": {
+		"includes": ["src/**/*.ts", "prisma.config.ts"]
+	}
+}

@@ -1,0 +1,52 @@
+---
+description: TypeScript code style and conventions
+globs: "**/*.ts"
+alwaysApply: false
+---
+
+# TypeScript Style Guide
+
+## Typing
+
+- Strict typing everywhere, never use `any`, `unknown`, or `never`
+- Export shared types from `src/types/index.ts`
+- Use mapped and conditional types for advanced transformations
+- Avoid type assertions with `as` or `!` unless absolutely necessary
+
+## Naming
+
+- Descriptive variable names with auxiliary verbs: `isLoaded`, `hasError`, `canEdit`
+- Constants for magic numbers and repeated values
+- PascalCase for types/interfaces, camelCase for variables/functions
+
+## Structure
+
+- Imports always at top of file, no inline imports
+- Functions max 50 lines, files max 400 lines — split if exceeds
+- One module per file, related helpers can coexist
+
+## Error handling
+
+```typescript
+// Use grammY error boundary for modules
+bot.errorBoundary((err) => {
+  console.error('Module error:', err);
+}).use(moduleComposer);
+
+// Wrap async service calls
+try {
+  const result = await someService();
+} catch (error) {
+  if (error instanceof SpecificError) {
+    // handle specifically
+  }
+  throw error;
+}
+```
+
+## Patterns
+
+- grammY modules as `Composer<BotContext>` instances
+- Prisma queries in service files, not in handlers
+- Handlers delegate to services, services delegate to Prisma
+- Use exhaustive switch for union types and enums

@@ -1,0 +1,48 @@
+---
+description: Project overview and architecture for Telegram Task Manager Bot
+alwaysApply: true
+---
+
+# Telegram Task Manager Bot
+
+Telegram-бот для управления задачами с AI-парсингом текста и голоса.
+
+## Stack
+
+- Runtime: Node.js + TypeScript (tsx)
+- Bot framework: grammY + @grammyjs/conversations
+- ORM: Prisma + PostgreSQL
+- AI: Groq SDK (Llama 3.1 8B for text parsing, Whisper Large v3 Turbo for STT)
+- Scheduler: node-cron
+- Linter/Formatter: Biome
+- Git hooks: Husky v9 + lint-staged
+
+## Architecture
+
+- Modular structure: each feature is a grammY `Composer` in `src/modules/`
+- Prisma Client singleton in `src/db/client.ts`
+- AI services in `src/services/` (ai.ts for LLM, stt.ts for speech-to-text)
+- Shared types exported from `src/types/index.ts`
+- Config via environment variables loaded in `src/config.ts`
+
+## Key directories
+
+```
+src/
+├── index.ts          — entry point
+├── bot.ts            — bot setup, middleware chain
+├── config.ts         — env vars, constants
+├── db/client.ts      — Prisma client singleton
+├── modules/          — feature modules (tasks, projects, voice, reminders)
+├── services/         — AI services (ai.ts, stt.ts)
+└── types/            — shared TypeScript types
+```
+
+## Commands
+
+- `pnpm dev` — run in watch mode
+- `pnpm start` — run once
+- `pnpm build` — TypeScript compilation
+- `pnpm lint` — Biome check
+- `pnpm db:migrate` — Prisma migrations
+- `pnpm db:generate` — generate Prisma client

@@ -1,0 +1,13 @@
+{
+  "plugins": {
+    "cursor-team-kit": {
+      "enabled": true
+    },
+    "superpowers": {
+      "enabled": true
+    },
+    "context7-plugin": {
+      "enabled": true
+    }
+  }
+}
