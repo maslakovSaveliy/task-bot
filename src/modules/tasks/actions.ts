@@ -18,11 +18,73 @@ const ACTION_LABELS: Record<string, string> = {
 	change_deadline: 'Дедлайн изменён',
 };
 
+const FUZZY_THRESHOLD = 0.55;
+
+function editDistance(a: string, b: string): number {
+	const m = a.length;
+	const n = b.length;
+	const prev = new Array<number>(n + 1);
+	const curr = new Array<number>(n + 1);
+	for (let j = 0; j <= n; j++) prev[j] = j;
+	for (let i = 1; i <= m; i++) {
+		curr[0] = i;
+		for (let j = 1; j <= n; j++) {
+			const cost = a.charAt(i - 1) === b.charAt(j - 1) ? 0 : 1;
+			curr[j] = Math.min((prev[j] ?? 0) + 1, (curr[j - 1] ?? 0) + 1, (prev[j - 1] ?? 0) + cost);
+		}
+		for (let j = 0; j <= n; j++) prev[j] = curr[j] ?? 0;
+	}
+	return prev[n] ?? 0;
+}
+
+function wordSimilarity(a: string, b: string): number {
+	if (a === b) return 1;
+	if (a.startsWith(b) || b.startsWith(a)) return 0.85;
+	const maxLen = Math.max(a.length, b.length);
+	if (maxLen === 0) return 1;
+	return 1 - editDistance(a, b) / maxLen;
+}
+
+function scoreFuzzyMatch(needle: string, title: string): number {
+	const needleWords = needle.toLowerCase().split(/\s+/).filter(Boolean);
+	const titleWords = title.toLowerCase().split(/\s+/).filter(Boolean);
+	if (needleWords.length === 0) return 0;
+
+	let totalScore = 0;
+	for (const nw of needleWords) {
+		let bestWordScore = 0;
+		for (const tw of titleWords) {
+			bestWordScore = Math.max(bestWordScore, wordSimilarity(nw, tw));
+		}
+		totalScore += bestWordScore;
+	}
+	return totalScore / needleWords.length;
+}
+
 function findByName(name: string, tasks: TaskWithProject[]): TaskWithProject | undefined {
 	const needle = name.toLowerCase();
 	const exact = tasks.find((t) => t.title.toLowerCase() === needle);
 	if (exact) return exact;
-	return tasks.find((t) => t.title.toLowerCase().includes(needle));
+
+	const byIncludes = tasks.find((t) => t.title.toLowerCase().includes(needle));
+	if (byIncludes) return byIncludes;
+
+	let bestTask: TaskWithProject | undefined;
+	let bestScore = 0;
+	for (const task of tasks) {
+		const score = scoreFuzzyMatch(name, task.title);
+		if (score > bestScore) {
+			bestScore = score;
+			bestTask = task;
+		}
+	}
+
+	if (bestTask && bestScore >= FUZZY_THRESHOLD) {
+		console.log(`[Fuzzy match] "${name}" → "${bestTask.title}" (score=${bestScore.toFixed(2)})`);
+		return bestTask;
+	}
+
+	return undefined;
 }
 
 function resolveTask(action: TaskActionRaw, tasks: TaskWithProject[]): TaskWithProject | undefined {

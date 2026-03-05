@@ -50,8 +50,11 @@ DEADLINE types (do NOT calculate dates, just classify):
 REMINDER (ONLY if user says "напомни за ...", "напомни заранее"):
 - {"amount":<N>,"unit":"minute|hour|day"} or null
 
-RECURRENCE ("каждый", "раз в", "еженедельно"):
+RECURRENCE ("каждый", "раз в", "еженедельно", "напомни мне каждый месяц N числа"):
 - {"period":"weekly|monthly|yearly","dayOfWeek":<0-6 or null>,"dayOfMonth":<1-31 or null>,"time":"HH:MM" or null}
+- "каждый месяц 5 числа напоминай мне X" → recurrence monthly, dayOfMonth:5, task:X
+- "раз в месяц 1 числа X" → recurrence monthly, dayOfMonth:1, task:X
+- "каждую пятницу в 10:00 X" → recurrence weekly, dayOfWeek:5, time:"10:00", task:X
 - If recurring, deadline and reminder must be null.
 
 === IF intent = "actions" ===
@@ -117,7 +120,16 @@ Input: "Work\\n- тесты\\n- баг"
 Output: {"intent":"new_tasks","tasks":[{"task":"Тесты","project":"Work","deadline":null,"reminder":null,"recurrence":null},{"task":"Баг","project":"Work","deadline":null,"reminder":null,"recurrence":null}]}
 
 Input: "Круги\\n• задача 1\\n\\nРабота\\n• задача 2\\n- задача 3\\n• задача 4\\n\\nЛичное\\n• задача 5"
-Output: {"intent":"new_tasks","tasks":[{"task":"Задача 1","project":"Круги","deadline":null,"reminder":null,"recurrence":null},{"task":"Задача 2","project":"Работа","deadline":null,"reminder":null,"recurrence":null},{"task":"Задача 3","project":"Работа","deadline":null,"reminder":null,"recurrence":null},{"task":"Задача 4","project":"Работа","deadline":null,"reminder":null,"recurrence":null},{"task":"Задача 5","project":"Личное","deadline":null,"reminder":null,"recurrence":null}]}`;
+Output: {"intent":"new_tasks","tasks":[{"task":"Задача 1","project":"Круги","deadline":null,"reminder":null,"recurrence":null},{"task":"Задача 2","project":"Работа","deadline":null,"reminder":null,"recurrence":null},{"task":"Задача 3","project":"Работа","deadline":null,"reminder":null,"recurrence":null},{"task":"Задача 4","project":"Работа","deadline":null,"reminder":null,"recurrence":null},{"task":"Задача 5","project":"Личное","deadline":null,"reminder":null,"recurrence":null}]}
+
+Input: "каждый месяц 5 числа напоминай мне скинуть бате 14 тысяч рублей"
+Output: {"intent":"new_tasks","tasks":[{"task":"Скинуть бате 14 тысяч рублей","project":"${DEFAULT_PROJECT_NAME}","deadline":null,"reminder":null,"recurrence":{"period":"monthly","dayOfWeek":null,"dayOfMonth":5,"time":null}}]}
+
+Input: "раз в месяц 1 числа оплата квартиры"
+Output: {"intent":"new_tasks","tasks":[{"task":"Оплата квартиры","project":"${DEFAULT_PROJECT_NAME}","deadline":null,"reminder":null,"recurrence":{"period":"monthly","dayOfWeek":null,"dayOfMonth":1,"time":null}}]}
+
+Input: "каждую пятницу в 10:00 созвон"
+Output: {"intent":"new_tasks","tasks":[{"task":"Созвон","project":"${DEFAULT_PROJECT_NAME}","deadline":null,"reminder":null,"recurrence":{"period":"weekly","dayOfWeek":5,"dayOfMonth":null,"time":"10:00"}}]}`;
 
 // --- JSON extraction ---
 
