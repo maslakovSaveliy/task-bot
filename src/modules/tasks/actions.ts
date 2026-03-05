@@ -17,16 +17,35 @@ const ACTION_LABELS: Record<string, string> = {
 	change_deadline: 'Дедлайн изменён',
 };
 
+function findByName(name: string, tasks: TaskWithProject[]): TaskWithProject | undefined {
+	const needle = name.toLowerCase();
+	const exact = tasks.find((t) => t.title.toLowerCase() === needle);
+	if (exact) return exact;
+	return tasks.find((t) => t.title.toLowerCase().includes(needle));
+}
+
 function resolveTask(action: TaskActionRaw, tasks: TaskWithProject[]): TaskWithProject | undefined {
-	if (action.taskNumber !== null && action.taskNumber >= 1 && action.taskNumber <= tasks.length) {
-		return tasks[action.taskNumber - 1];
-	}
-
 	if (action.taskName) {
-		const needle = action.taskName.toLowerCase();
-		return tasks.find((t) => t.title.toLowerCase().includes(needle));
+		const byName = findByName(action.taskName, tasks);
+		if (byName) {
+			console.log(
+				`[Action resolve] by name "${action.taskName}" → "${byName.title}" (id=${byName.id})`,
+			);
+			return byName;
+		}
 	}
 
+	if (action.taskNumber !== null && action.taskNumber >= 1 && action.taskNumber <= tasks.length) {
+		const byNumber = tasks[action.taskNumber - 1];
+		if (byNumber) {
+			console.log(
+				`[Action resolve] by number #${action.taskNumber} → "${byNumber.title}" (id=${byNumber.id})`,
+			);
+		}
+		return byNumber;
+	}
+
+	console.log(`[Action resolve] NOT FOUND: name="${action.taskName}", number=${action.taskNumber}`);
 	return undefined;
 }
 
