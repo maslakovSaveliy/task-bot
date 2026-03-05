@@ -51,24 +51,39 @@ RECURRENCE (for "каждый", "раз в", "еженедельно", "ежем
 - If recurring, deadline and reminder must be null.
 - If time not specified, set time to null.
 
-RULES:
+CRITICAL RULES:
+- "напомни через X <что-то>" = ONE task with deadline relative. "напомни" here means "remind me", the task is what follows.
+- "напомни за X до" = advance reminder (reminder field), NOT deadline.
 - Multiple tasks (bullets, list, categories) → return ALL as separate objects.
 - Category/heading names before tasks = project names.
 - Single task → still return array with one element.
-- Return ONLY JSON, no markdown, no text.
+- Return ONLY the JSON array. No markdown, no backticks, no explanation.
 
 EXAMPLES:
+
 Input: "купить молоко"
 Output: [{"task":"Купить молоко","project":"${DEFAULT_PROJECT_NAME}","deadline":null,"reminder":null,"recurrence":null}]
 
 Input: "через 2 минуты снять с плиты"
 Output: [{"task":"Снять с плиты","project":"${DEFAULT_PROJECT_NAME}","deadline":{"type":"relative","amount":2,"unit":"minute"},"reminder":null,"recurrence":null}]
 
+Input: "напомни через 2 минуты снять сковородку с плиты"
+Output: [{"task":"Снять сковородку с плиты","project":"${DEFAULT_PROJECT_NAME}","deadline":{"type":"relative","amount":2,"unit":"minute"},"reminder":null,"recurrence":null}]
+
+Input: "напомни через 5 минут позвонить маме"
+Output: [{"task":"Позвонить маме","project":"${DEFAULT_PROJECT_NAME}","deadline":{"type":"relative","amount":5,"unit":"minute"},"reminder":null,"recurrence":null}]
+
+Input: "напомни через час купить молоко"
+Output: [{"task":"Купить молоко","project":"${DEFAULT_PROJECT_NAME}","deadline":{"type":"relative","amount":1,"unit":"hour"},"reminder":null,"recurrence":null}]
+
 Input: "на 8 марта поздравить маму"
 Output: [{"task":"Поздравить маму","project":"${DEFAULT_PROJECT_NAME}","deadline":{"type":"date","day":8,"month":3,"year":null,"time":null},"reminder":null,"recurrence":null}]
 
 Input: "сдать отчёт до пятницы, напомни за день"
 Output: [{"task":"Сдать отчёт","project":"${DEFAULT_PROJECT_NAME}","deadline":{"type":"weekday","weekday":5,"time":null},"reminder":{"amount":1,"unit":"day"},"recurrence":null}]
+
+Input: "завтра в 10 позвонить врачу"
+Output: [{"task":"Позвонить врачу","project":"${DEFAULT_PROJECT_NAME}","deadline":{"type":"tomorrow","time":"10:00"},"reminder":null,"recurrence":null}]
 
 Input: "каждую пятницу в 10:00 созвон"
 Output: [{"task":"Созвон","project":"${DEFAULT_PROJECT_NAME}","deadline":null,"reminder":null,"recurrence":{"period":"weekly","dayOfWeek":5,"dayOfMonth":null,"time":"10:00"}}]
@@ -298,6 +313,10 @@ export async function parseTaskMessage(text: string, timezone: string): Promise<
 		throw new Error('Empty response from AI');
 	}
 
+	console.log('[AI raw response]', content);
+
 	const rawTasks = extractJsonArray(content);
+	console.log('[AI parsed tasks]', JSON.stringify(rawTasks));
+
 	return rawTasks.map((raw) => rawToFinal(raw, now, timezone));
 }
