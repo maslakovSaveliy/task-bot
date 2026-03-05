@@ -29,29 +29,32 @@ voiceModule.on('message:voice', async (ctx) => {
 		);
 
 		const user = await ensureUser(telegramId, chatId);
-		const parsed = await parseTaskMessage(transcribedText, user.timezone);
+		const tasks = await parseTaskMessage(transcribedText, user.timezone);
 
-		await addTaskFromParsed(
-			telegramId,
-			chatId,
-			parsed.task,
-			parsed.project,
-			parsed.dueDate,
-			parsed.remindAt,
-		);
+		const resultLines: string[] = [];
+		for (const parsed of tasks) {
+			await addTaskFromParsed(
+				telegramId,
+				chatId,
+				parsed.task,
+				parsed.project,
+				parsed.dueDate,
+				parsed.remindAt,
+			);
+			resultLines.push(`📁 ${parsed.project}\n📝 ${parsed.task}`);
+		}
 
-		const dateInfo = parsed.dueDate
-			? `\nСрок: ${new Date(parsed.dueDate).toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })}`
-			: '';
+		const header =
+			tasks.length === 1 ? '✅ Задача добавлена!' : `✅ Добавлено задач: ${tasks.length}`;
 
 		await ctx.api.editMessageText(
 			Number(chatId),
 			processingMsg.message_id,
-			`✅ Задача добавлена!\n📁 ${parsed.project}\n📝 ${parsed.task}${dateInfo}\n\n🎤 _"${transcribedText}"_`,
+			`${header}\n\n${resultLines.join('\n\n')}\n\n🎤 _"${transcribedText}"_`,
 			{ parse_mode: 'Markdown' },
 		);
 
-		await refreshPinnedMessage(ctx, telegramId, chatId);
+		await refreshPinnedMessage(ctx, telegramId, chatId, { resend: true });
 	} catch (error) {
 		console.error('Error processing voice message:', error);
 		await ctx.api.editMessageText(

@@ -1,21 +1,21 @@
 import type { TaskWithProject } from '../../types/index.js';
 
-function formatDate(date: Date): string {
+function formatDate(date: Date, timezone: string): string {
 	return date.toLocaleDateString('ru-RU', {
 		day: '2-digit',
 		month: '2-digit',
 		hour: '2-digit',
 		minute: '2-digit',
-		timeZone: 'Europe/Moscow',
+		timeZone: timezone,
 	});
 }
 
-function formatTaskLine(task: TaskWithProject, index: number): string {
-	const dateStr = task.dueDate ? ` | ${formatDate(task.dueDate)}` : '';
+function formatTaskLine(task: TaskWithProject, index: number, timezone: string): string {
+	const dateStr = task.dueDate ? ` | ${formatDate(task.dueDate, timezone)}` : '';
 	return `  ${index}. ${task.title}${dateStr}`;
 }
 
-export function renderTaskList(tasks: TaskWithProject[]): string {
+export function renderTaskList(tasks: TaskWithProject[], timezone: string): string {
 	if (tasks.length === 0) {
 		return '📋 *Список задач пуст*\n\nОтправьте текст или голосовое сообщение, чтобы добавить задачу.';
 	}
@@ -37,7 +37,7 @@ export function renderTaskList(tasks: TaskWithProject[]): string {
 	for (const [projectName, projectTasks] of grouped) {
 		lines.push(`📁 *${escapeMarkdown(projectName)}*`);
 		for (const task of projectTasks) {
-			lines.push(formatTaskLine(task, globalIndex));
+			lines.push(formatTaskLine(task, globalIndex, timezone));
 			globalIndex++;
 		}
 		lines.push('');

@@ -26,6 +26,6 @@
 		}
 	},
 	"files": {
-		"includes": ["src/**/*.ts", "prisma.config.ts"]
+		"includes": ["src/**/*.ts", "!src/generated/**", "prisma.config.ts"]
 	}
 }

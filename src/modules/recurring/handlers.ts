@@ -1,5 +1,5 @@
 import { Composer } from 'grammy';
-import type { Recurrence } from '../../../generated/prisma/index.js';
+import type { Recurrence } from '../../generated/prisma/client.js';
 import type { BotContext } from '../../types/index.js';
 import { ensureUser } from '../tasks/service.js';
 import { buildRecurringListKeyboard, parseRecurringCallback } from './keyboard.js';

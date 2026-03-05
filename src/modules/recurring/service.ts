@@ -1,5 +1,5 @@
-import type { Recurrence } from '../../../generated/prisma/index.js';
 import { prisma } from '../../db/client.js';
+import type { Recurrence } from '../../generated/prisma/client.js';
 import type { ParsedTask, RecurrenceType } from '../../types/index.js';
 
 const RECURRENCE_MAP: Record<RecurrenceType, Recurrence> = {

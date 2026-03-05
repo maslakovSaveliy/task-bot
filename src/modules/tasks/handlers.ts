@@ -1,3 +1,4 @@
+import { find as findTimezone } from 'geo-tz';
 import { Composer, InlineKeyboard } from 'grammy';
 import { parseTaskMessage } from '../../services/ai.js';
 import type { BotContext } from '../../types/index.js';
@@ -13,24 +14,82 @@ import {
 
 export const tasksModule = new Composer<BotContext>();
 
-const TIMEZONE_OPTIONS = [
-	{ label: 'Москва (UTC+3)', value: 'Europe/Moscow' },
-	{ label: 'Киев (UTC+2)', value: 'Europe/Kiev' },
-	{ label: 'Минск (UTC+3)', value: 'Europe/Minsk' },
-	{ label: 'Алматы (UTC+6)', value: 'Asia/Almaty' },
-	{ label: 'Ташкент (UTC+5)', value: 'Asia/Tashkent' },
-	{ label: 'Тбилиси (UTC+4)', value: 'Asia/Tbilisi' },
-] as const;
+interface TimezoneOption {
+	label: string;
+	value: string;
+}
+
+const TIMEZONE_OPTIONS: TimezoneOption[] = [
+	// Russia
+	{ label: 'Калининград +2', value: 'Europe/Kaliningrad' },
+	{ label: 'Москва +3', value: 'Europe/Moscow' },
+	{ label: 'Самара +4', value: 'Europe/Samara' },
+	{ label: 'Екатеринбург +5', value: 'Asia/Yekaterinburg' },
+	{ label: 'Омск +6', value: 'Asia/Omsk' },
+	{ label: 'Красноярск +7', value: 'Asia/Krasnoyarsk' },
+	{ label: 'Иркутск +8', value: 'Asia/Irkutsk' },
+	{ label: 'Якутск +9', value: 'Asia/Yakutsk' },
+	{ label: 'Владивосток +10', value: 'Asia/Vladivostok' },
+	{ label: 'Магадан +11', value: 'Asia/Magadan' },
+	{ label: 'Камчатка +12', value: 'Asia/Kamchatka' },
+	// CIS
+	{ label: 'Минск +3', value: 'Europe/Minsk' },
+	{ label: 'Киев +2', value: 'Europe/Kiev' },
+	{ label: 'Тбилиси +4', value: 'Asia/Tbilisi' },
+	{ label: 'Баку +4', value: 'Asia/Baku' },
+	{ label: 'Ташкент +5', value: 'Asia/Tashkent' },
+	{ label: 'Алматы +6', value: 'Asia/Almaty' },
+	// International
+	{ label: 'Стамбул +3', value: 'Europe/Istanbul' },
+	{ label: 'Дубай +4', value: 'Asia/Dubai' },
+	{ label: 'Бангкок +7', value: 'Asia/Bangkok' },
+	{ label: 'Токио +9', value: 'Asia/Tokyo' },
+	{ label: 'Лондон +0', value: 'Europe/London' },
+	{ label: 'Берлин +1', value: 'Europe/Berlin' },
+];
 
 const CALLBACK_TZ_PREFIX = 'tz:';
 
+const TIMEZONE_PROMPT =
+	'Выбери свой часовой пояс из списка ниже.\n\n' +
+	'📍 Или отправь геолокацию (скрепка → Геопозиция) для автоматического определения.';
+
+function getUtcOffset(timezone: string): string {
+	const formatter = new Intl.DateTimeFormat('en-US', {
+		timeZone: timezone,
+		timeZoneName: 'shortOffset',
+	});
+	const parts = formatter.formatToParts(new Date());
+	const tzPart = parts.find((p) => p.type === 'timeZoneName');
+	return tzPart?.value?.replace('GMT', '') ?? '';
+}
+
+function formatTimezoneName(timezone: string): string {
+	return timezone.split('/').pop()?.replace(/_/g, ' ') ?? timezone;
+}
+
 function buildTimezoneKeyboard(): InlineKeyboard {
 	const kb = new InlineKeyboard();
-	for (const tz of TIMEZONE_OPTIONS) {
-		kb.text(tz.label, `${CALLBACK_TZ_PREFIX}${tz.value}`).row();
+	for (let i = 0; i < TIMEZONE_OPTIONS.length; i += 2) {
+		const first = TIMEZONE_OPTIONS[i];
+		if (first) {
+			kb.text(first.label, `${CALLBACK_TZ_PREFIX}${first.value}`);
+		}
+		const second = TIMEZONE_OPTIONS[i + 1];
+		if (second) {
+			kb.text(second.label, `${CALLBACK_TZ_PREFIX}${second.value}`);
+		}
+		kb.row();
 	}
 	return kb;
 }
+
+const WELCOME_COMMANDS =
+	'Команды:\n' +
+	'/tasks — показать список задач\n' +
+	'/projects — список проектов\n' +
+	'/recurring — повторяющиеся напоминания\n' +
+	'/timezone — сменить часовой пояс\n';
 
 tasksModule.command('start', async (ctx) => {
 	const telegramId = BigInt(ctx.from?.id ?? 0);
@@ -40,21 +99,15 @@ tasksModule.command('start', async (ctx) => {
 	if (!user.isOnboarded) {
 		await ctx.reply(
 			'Привет! Я бот для управления задачами.\n\n' +
-				'Для начала выбери свой часовой пояс, чтобы напоминания приходили вовремя:',
+				'Для начала выбери свой часовой пояс, чтобы напоминания приходили вовремя.\n\n' +
+				TIMEZONE_PROMPT,
 			{ reply_markup: buildTimezoneKeyboard() },
 		);
 		return;
 	}
 
 	await ctx.reply(
-		'Привет! Я бот для управления задачами.\n\n' +
-			'Просто отправь мне текст или голосовое сообщение с описанием задачи, ' +
-			'и я добавлю её в список.\n\n' +
-			'Команды:\n' +
-			'/tasks — показать список задач\n' +
-			'/projects — список проектов\n' +
-			'/recurring — повторяющиеся напоминания\n' +
-			'/timezone — сменить часовой пояс\n',
+		`Привет! Я бот для управления задачами.\n\nПросто отправь мне текст или голосовое сообщение с описанием задачи, и я добавлю её в список.\n\n${WELCOME_COMMANDS}`,
 	);
 
 	await refreshPinnedMessage(ctx, telegramId, chatId);
@@ -93,7 +146,7 @@ tasksModule.command('help', async (ctx) => {
 });
 
 tasksModule.command('timezone', async (ctx) => {
-	await ctx.reply('Выбери свой часовой пояс:', {
+	await ctx.reply(TIMEZONE_PROMPT, {
 		reply_markup: buildTimezoneKeyboard(),
 	});
 });
@@ -115,17 +168,14 @@ tasksModule.on('callback_query:data', async (ctx) => {
 
 		await updateUserTimezone(user.id, timezone);
 
-		const label = TIMEZONE_OPTIONS.find((tz) => tz.value === timezone)?.label ?? timezone;
-		await ctx.editMessageText(`Часовой пояс установлен: ${label}`);
+		const offset = getUtcOffset(timezone);
+		const cityName =
+			TIMEZONE_OPTIONS.find((tz) => tz.value === timezone)?.label ?? formatTimezoneName(timezone);
+		await ctx.editMessageText(`✅ Часовой пояс установлен: ${cityName} (UTC${offset})`);
 		await ctx.answerCallbackQuery({ text: 'Часовой пояс сохранён!' });
 
 		await ctx.reply(
-			'Отлично! Теперь отправь мне текст или голосовое с описанием задачи.\n\n' +
-				'Команды:\n' +
-				'/tasks — показать список задач\n' +
-				'/projects — список проектов\n' +
-				'/recurring — повторяющиеся напоминания\n' +
-				'/timezone — сменить часовой пояс\n',
+			`Отлично! Теперь отправь мне текст или голосовое с описанием задачи.\n\n${WELCOME_COMMANDS}`,
 		);
 
 		await refreshPinnedMessage(ctx, telegramId, chatId);
@@ -160,6 +210,34 @@ tasksModule.on('callback_query:data', async (ctx) => {
 	await refreshPinnedMessage(ctx, telegramId, chatId);
 });
 
+tasksModule.on('message:location', async (ctx) => {
+	const { latitude, longitude } = ctx.message.location;
+	const telegramId = BigInt(ctx.from.id);
+	const chatId = BigInt(ctx.chat.id);
+
+	const timezones = findTimezone(latitude, longitude);
+	const timezone = timezones[0];
+
+	if (!timezone) {
+		await ctx.reply('Не удалось определить часовой пояс. Выбери вручную:', {
+			reply_markup: buildTimezoneKeyboard(),
+		});
+		return;
+	}
+
+	const user = await ensureUser(telegramId, chatId);
+	await updateUserTimezone(user.id, timezone);
+
+	const offset = getUtcOffset(timezone);
+	const cityName = formatTimezoneName(timezone);
+
+	await ctx.reply(
+		`✅ Часовой пояс определён: ${cityName} (UTC${offset})\n\nТеперь отправь мне текст или голосовое с описанием задачи.\n\n${WELCOME_COMMANDS}`,
+	);
+
+	await refreshPinnedMessage(ctx, telegramId, chatId);
+});
+
 tasksModule.on('message:text', async (ctx) => {
 	const text = ctx.message.text;
 
@@ -172,48 +250,69 @@ tasksModule.on('message:text', async (ctx) => {
 
 	try {
 		const user = await ensureUser(telegramId, chatId);
-		const parsed = await parseTaskMessage(text, user.timezone);
+		const tasks = await parseTaskMessage(text, user.timezone);
 
-		if (parsed.recurrence) {
-			const { createRecurringFromParsed } = await import('../recurring/service.js');
-			const recurring = await createRecurringFromParsed(user.id, user.timezone, parsed);
+		const resultLines: string[] = [];
+		let recurringCount = 0;
+		let regularCount = 0;
 
-			const periodLabels: Record<string, string> = {
-				weekly: 'Еженедельно',
-				monthly: 'Ежемесячно',
-				yearly: 'Ежегодно',
-			};
-			const periodLabel = periodLabels[parsed.recurrence] ?? parsed.recurrence;
-			const timeStr = `${String(recurring.hour).padStart(2, '0')}:${String(recurring.minute).padStart(2, '0')}`;
+		for (const parsed of tasks) {
+			if (parsed.recurrence) {
+				const { createRecurringFromParsed } = await import('../recurring/service.js');
+				const recurring = await createRecurringFromParsed(user.id, user.timezone, parsed);
 
-			await ctx.api.editMessageText(
-				Number(chatId),
-				processingMsg.message_id,
-				`🔁 Повторяющееся напоминание создано!\n📝 ${parsed.task}\n⏰ ${periodLabel}, ${timeStr}`,
-			);
-			return;
+				const periodLabels: Record<string, string> = {
+					weekly: 'Еженедельно',
+					monthly: 'Ежемесячно',
+					yearly: 'Ежегодно',
+				};
+				const periodLabel = periodLabels[parsed.recurrence] ?? parsed.recurrence;
+				const timeStr = `${String(recurring.hour).padStart(2, '0')}:${String(recurring.minute).padStart(2, '0')}`;
+				resultLines.push(`🔁 ${parsed.task} (${periodLabel}, ${timeStr})`);
+				recurringCount++;
+			} else {
+				await addTaskFromParsed(
+					telegramId,
+					chatId,
+					parsed.task,
+					parsed.project,
+					parsed.dueDate,
+					parsed.remindAt,
+				);
+
+				let taskLine = `📁 ${parsed.project}\n📝 ${parsed.task}`;
+				if (parsed.dueDate) {
+					const dateStr = new Date(parsed.dueDate).toLocaleString('ru-RU', {
+						timeZone: user.timezone,
+					});
+					taskLine += `\n📅 Срок: ${dateStr}`;
+				}
+				if (parsed.remindAt) {
+					const remindStr = new Date(parsed.remindAt).toLocaleString('ru-RU', {
+						timeZone: user.timezone,
+					});
+					taskLine += `\n🔔 Напомню заранее: ${remindStr}`;
+				}
+				resultLines.push(taskLine);
+				regularCount++;
+			}
 		}
 
-		await addTaskFromParsed(
-			telegramId,
-			chatId,
-			parsed.task,
-			parsed.project,
-			parsed.dueDate,
-			parsed.remindAt,
-		);
-
-		const dateInfo = parsed.dueDate
-			? `\nСрок: ${new Date(parsed.dueDate).toLocaleString('ru-RU', { timeZone: user.timezone })}`
-			: '';
+		const totalCount = regularCount + recurringCount;
+		const header =
+			totalCount === 1
+				? regularCount === 1
+					? '✅ Задача добавлена!'
+					: '✅ Напоминание создано!'
+				: `✅ Добавлено задач: ${totalCount}`;
 
 		await ctx.api.editMessageText(
 			Number(chatId),
 			processingMsg.message_id,
-			`✅ Задача добавлена!\n📁 ${parsed.project}\n📝 ${parsed.task}${dateInfo}`,
+			`${header}\n\n${resultLines.join('\n\n')}`,
 		);
 
-		await refreshPinnedMessage(ctx, telegramId, chatId);
+		await refreshPinnedMessage(ctx, telegramId, chatId, { resend: true });
 	} catch (error) {
 		console.error('Error processing text task:', error);
 		await ctx.api.editMessageText(

@@ -1,6 +1,6 @@
 generator client {
-  provider = "prisma-client-js"
-  output   = "../generated/prisma"
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
 }
 
 datasource db {
@@ -32,17 +32,18 @@ model Project {
 }
 
 model Task {
-  id          Int       @id @default(autoincrement())
-  title       String
-  projectId   Int
-  project     Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  userId      Int
-  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  dueDate     DateTime?
-  remindAt    DateTime?
-  isReminded  Boolean   @default(false)
-  isCompleted Boolean   @default(false)
-  createdAt   DateTime  @default(now())
+  id             Int       @id @default(autoincrement())
+  title          String
+  projectId      Int
+  project        Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  userId         Int
+  user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  dueDate        DateTime?
+  remindAt       DateTime?
+  isReminded     Boolean   @default(false)
+  isDueReminded  Boolean   @default(false)
+  isCompleted    Boolean   @default(false)
+  createdAt      DateTime  @default(now())
 }
 
 enum Recurrence {

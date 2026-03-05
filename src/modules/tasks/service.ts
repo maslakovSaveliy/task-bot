@@ -77,6 +77,25 @@ export async function markAsReminded(taskId: number) {
 	});
 }
 
+export async function getPendingDueReminders() {
+	const now = new Date();
+	return prisma.task.findMany({
+		where: {
+			isCompleted: false,
+			isDueReminded: { equals: false },
+			dueDate: { lte: now },
+		},
+		include: { user: true, project: true },
+	});
+}
+
+export async function markAsDueReminded(taskId: number) {
+	return prisma.task.update({
+		where: { id: taskId },
+		data: { isDueReminded: { set: true } },
+	});
+}
+
 export async function updatePinnedMessageId(userId: number, messageId: number) {
 	return prisma.user.update({
 		where: { id: userId },

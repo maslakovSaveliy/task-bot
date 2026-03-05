@@ -1,5 +1,5 @@
 import { InlineKeyboard } from 'grammy';
-import type { RecurringTask } from '../../../generated/prisma/index.js';
+import type { RecurringTask } from '../../generated/prisma/client.js';
 
 const CALLBACK_PAUSE_PREFIX = 'rec_pause:';
 const CALLBACK_DELETE_PREFIX = 'rec_del:';

@@ -3,24 +3,44 @@ import cron from 'node-cron';
 import { REMINDER_CHECK_CRON } from '../../config.js';
 import type { BotContext } from '../../types/index.js';
 import { advanceRecurringTask, getPendingRecurringTasks } from '../recurring/service.js';
-import { getPendingReminders, markAsReminded } from '../tasks/service.js';
+import {
+	getPendingDueReminders,
+	getPendingReminders,
+	markAsDueReminded,
+	markAsReminded,
+} from '../tasks/service.js';
 
-async function processOneTimeReminders(bot: Bot<BotContext>) {
+async function processAdvanceReminders(bot: Bot<BotContext>) {
 	const reminders = await getPendingReminders();
 
 	for (const task of reminders) {
 		const chatId = Number(task.user.chatId);
 
 		const dueDateStr = task.dueDate
-			? `\nСрок: ${task.dueDate.toLocaleString('ru-RU', { timeZone: task.user.timezone })}`
+			? `\n📅 Дедлайн: ${task.dueDate.toLocaleString('ru-RU', { timeZone: task.user.timezone })}`
 			: '';
 
 		await bot.api.sendMessage(
 			chatId,
-			`⏰ Напоминание!\n📁 ${task.project.name}\n📝 ${task.title}${dueDateStr}`,
+			`🔔 Предварительное напоминание!\n📁 ${task.project.name}\n📝 ${task.title}${dueDateStr}`,
 		);
 
 		await markAsReminded(task.id);
+	}
+}
+
+async function processDueReminders(bot: Bot<BotContext>) {
+	const reminders = await getPendingDueReminders();
+
+	for (const task of reminders) {
+		const chatId = Number(task.user.chatId);
+
+		await bot.api.sendMessage(
+			chatId,
+			`⏰ Дедлайн наступил!\n📁 ${task.project.name}\n📝 ${task.title}`,
+		);
+
+		await markAsDueReminded(task.id);
 	}
 }
 
@@ -39,7 +59,8 @@ async function processRecurringReminders(bot: Bot<BotContext>) {
 export function startReminderScheduler(bot: Bot<BotContext>) {
 	cron.schedule(REMINDER_CHECK_CRON, async () => {
 		try {
-			await processOneTimeReminders(bot);
+			await processAdvanceReminders(bot);
+			await processDueReminders(bot);
 			await processRecurringReminders(bot);
 		} catch (error) {
 			console.error('Reminder scheduler error:', error);

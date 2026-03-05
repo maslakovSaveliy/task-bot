@@ -8,11 +8,26 @@ const CALLBACK_REFRESH = 'task_refresh';
 export function buildTaskListKeyboard(tasks: TaskWithProject[]): InlineKeyboard {
 	const keyboard = new InlineKeyboard();
 
+	const grouped = new Map<string, TaskWithProject[]>();
 	for (const task of tasks) {
-		keyboard
-			.text(`✅ ${task.id}`, `${CALLBACK_PREFIX_DONE}${task.id}`)
-			.text(`🗑 ${task.id}`, `${CALLBACK_PREFIX_DELETE}${task.id}`)
-			.row();
+		const projectName = task.project.name;
+		const existing = grouped.get(projectName);
+		if (existing) {
+			existing.push(task);
+		} else {
+			grouped.set(projectName, [task]);
+		}
+	}
+
+	let index = 1;
+	for (const [, projectTasks] of grouped) {
+		for (const task of projectTasks) {
+			keyboard
+				.text(`✅ ${index}`, `${CALLBACK_PREFIX_DONE}${task.id}`)
+				.text(`🗑 ${index}`, `${CALLBACK_PREFIX_DELETE}${task.id}`)
+				.row();
+			index++;
+		}
 	}
 
 	keyboard.text('🔄 Обновить', CALLBACK_REFRESH);

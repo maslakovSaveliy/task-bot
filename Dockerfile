@@ -15,7 +15,6 @@ FROM base AS runtime
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 
-ENV DATABASE_URL="postgresql://placeholder:placeholder@localhost:5432/placeholder"
 RUN pnpm exec prisma generate
 
 CMD ["pnpm", "start"]
