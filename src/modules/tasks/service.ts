@@ -114,6 +114,28 @@ export async function updateUserTimezone(userId: number, timezone: string) {
 	});
 }
 
+export async function renameTask(taskId: number, userId: number, newTitle: string) {
+	return prisma.task.updateMany({
+		where: { id: taskId, userId },
+		data: { title: newTitle },
+	});
+}
+
+export async function moveTaskToProject(taskId: number, userId: number, newProjectName: string) {
+	const project = await ensureProject(newProjectName, userId);
+	return prisma.task.updateMany({
+		where: { id: taskId, userId },
+		data: { projectId: project.id },
+	});
+}
+
+export async function updateTaskDeadline(taskId: number, userId: number, newDueDate: Date | null) {
+	return prisma.task.updateMany({
+		where: { id: taskId, userId },
+		data: { dueDate: newDueDate, isDueReminded: false },
+	});
+}
+
 export async function addTaskFromParsed(
 	telegramId: bigint,
 	chatId: bigint,

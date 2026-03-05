@@ -58,3 +58,23 @@ export interface TaskWithProject {
 		name: string;
 	};
 }
+
+export type TaskActionType = 'delete' | 'complete' | 'rename' | 'move_project' | 'change_deadline';
+
+export interface TaskActionRaw {
+	action: TaskActionType;
+	taskNumber: number | null;
+	taskName: string | null;
+	newTitle?: string;
+	newProject?: string;
+	newDeadline?: DeadlineExpression | null;
+}
+
+export type AIParseResult =
+	| { intent: 'new_tasks'; tasks: ParsedTaskRaw[] }
+	| { intent: 'actions'; actions: TaskActionRaw[] };
+
+export interface ActionResult {
+	success: boolean;
+	message: string;
+}

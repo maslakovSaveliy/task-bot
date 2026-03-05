@@ -1,19 +1,36 @@
 import OpenAI from 'openai';
 import { AI_CHAT_MODEL, config, DEFAULT_PROJECT_NAME } from '../config.js';
 import type {
+	AIParseResult,
 	DeadlineExpression,
 	ParsedTask,
 	ParsedTaskRaw,
 	ReminderExpression,
+	TaskActionRaw,
+	TaskWithProject,
 	TimeUnit,
 } from '../types/index.js';
 
 const ai = new OpenAI({ apiKey: config.aiApiKey, baseURL: config.aiBaseUrl });
 
-const SYSTEM_PROMPT = `You are a task parser. Extract structured data from user messages.
+// --- Prompt ---
+
+const SYSTEM_PROMPT = `You are a Telegram task bot assistant. Classify the user message and return JSON.
 Current weekday: {weekday}
 
-Return a JSON ARRAY. Each element:
+{taskContext}
+
+STEP 1: Determine intent.
+- If the message describes NEW tasks to create → intent = "new_tasks"
+- If the message describes ACTIONS on existing tasks (delete, complete, rename, move, change deadline) → intent = "actions"
+
+STEP 2: Return the appropriate JSON.
+
+=== IF intent = "new_tasks" ===
+
+Return: {"intent":"new_tasks","tasks":[...]}
+
+Each task object:
 {
   "task": "clean task title",
   "project": "project name or ${DEFAULT_PROJECT_NAME}",
@@ -23,103 +40,100 @@ Return a JSON ARRAY. Each element:
 }
 
 DEADLINE types (do NOT calculate dates, just classify):
-- Relative time: {"type":"relative","amount":<N>,"unit":"minute|hour|day|week"}
-  "через 2 минуты" → {"type":"relative","amount":2,"unit":"minute"}
-  "через час" → {"type":"relative","amount":1,"unit":"hour"}
-  "через полчаса" → {"type":"relative","amount":30,"unit":"minute"}
-  "через 3 дня" → {"type":"relative","amount":3,"unit":"day"}
-  "напомни через 5 минут" → deadline:{"type":"relative","amount":5,"unit":"minute"}
-- Specific date: {"type":"date","day":<1-31>,"month":<1-12>,"year":<YYYY or null>,"time":"HH:MM" or null}
-  "8 марта" → {"type":"date","day":8,"month":3,"year":null,"time":null}
-  "15 января в 10:00" → {"type":"date","day":15,"month":1,"year":null,"time":"10:00"}
+- Relative: {"type":"relative","amount":<N>,"unit":"minute|hour|day|week"}
+- Date: {"type":"date","day":<1-31>,"month":<1-12>,"year":<YYYY or null>,"time":"HH:MM" or null}
 - Weekday: {"type":"weekday","weekday":<0-6 Sun-Sat>,"time":"HH:MM" or null}
-  "в пятницу" → {"type":"weekday","weekday":5,"time":null}
-  "до среды в 18:00" → {"type":"weekday","weekday":3,"time":"18:00"}
 - Tomorrow: {"type":"tomorrow","time":"HH:MM" or null}
-  "завтра в 10" → {"type":"tomorrow","time":"10:00"}
 - Day after: {"type":"day_after_tomorrow","time":"HH:MM" or null}
-- No deadline: null
+- null if no deadline
 
-REMINDER (advance, ONLY if user says "напомни за ...", "напомни заранее"):
-- {"amount":<N>,"unit":"minute|hour|day"} — "напомни за день" → {"amount":1,"unit":"day"}
-- null if not requested
+REMINDER (ONLY if user says "напомни за ...", "напомни заранее"):
+- {"amount":<N>,"unit":"minute|hour|day"} or null
 
-RECURRENCE (for "каждый", "раз в", "еженедельно", "ежемесячно"):
+RECURRENCE ("каждый", "раз в", "еженедельно"):
 - {"period":"weekly|monthly|yearly","dayOfWeek":<0-6 or null>,"dayOfMonth":<1-31 or null>,"time":"HH:MM" or null}
-  "каждую пятницу в 10:00" → {"period":"weekly","dayOfWeek":5,"dayOfMonth":null,"time":"10:00"}
-  "раз в месяц 1 числа" → {"period":"monthly","dayOfWeek":null,"dayOfMonth":1,"time":null}
 - If recurring, deadline and reminder must be null.
-- If time not specified, set time to null.
+
+=== IF intent = "actions" ===
+
+Return: {"intent":"actions","actions":[...]}
+
+Each action object:
+{
+  "action": "delete|complete|rename|move_project|change_deadline",
+  "taskNumber": <number from list or null>,
+  "taskName": "partial task name or null",
+  "newTitle": "new title (for rename only)",
+  "newProject": "project name (for move_project only)",
+  "newDeadline": <DeadlineExpression or null (for change_deadline only)>
+}
+
+Action examples:
+- "удали задачу 3" → {"action":"delete","taskNumber":3,"taskName":null}
+- "удали купить молоко" → {"action":"delete","taskNumber":null,"taskName":"купить молоко"}
+- "задача 1 готова" → {"action":"complete","taskNumber":1,"taskName":null}
+- "переименуй задачу 2 в Позвонить маме" → {"action":"rename","taskNumber":2,"taskName":null,"newTitle":"Позвонить маме"}
+- "перенеси задачу 1 в проект Работа" → {"action":"move_project","taskNumber":1,"taskName":null,"newProject":"Работа"}
+- "перенеси дедлайн задачи 2 на завтра" → {"action":"change_deadline","taskNumber":2,"taskName":null,"newDeadline":{"type":"tomorrow","time":null}}
+- "удали все задачи из General" → multiple delete actions for each task in General
 
 CRITICAL RULES:
-- "напомни через X <что-то>" = ONE task with deadline relative. "напомни" here means "remind me", the task is what follows.
-- "напомни за X до" = advance reminder (reminder field), NOT deadline.
-- Multiple tasks (bullets, list, categories) → return ALL as separate objects.
-- Category/heading names before tasks = project names.
-- Single task → still return array with one element.
-- Return ONLY the JSON array. No markdown, no backticks, no explanation.
+- "напомни через X <что-то>" = new_tasks with deadline relative, NOT an action.
+- "удали", "убери", "выполни", "готово", "переименуй", "перенеси в проект", "измени дедлайн" = actions.
+- Multiple tasks/actions in one message → return ALL.
+- Single item → still wrap in array.
+- Return ONLY JSON. No markdown, no backticks, no explanation.
 
 EXAMPLES:
 
 Input: "купить молоко"
-Output: [{"task":"Купить молоко","project":"${DEFAULT_PROJECT_NAME}","deadline":null,"reminder":null,"recurrence":null}]
+Output: {"intent":"new_tasks","tasks":[{"task":"Купить молоко","project":"${DEFAULT_PROJECT_NAME}","deadline":null,"reminder":null,"recurrence":null}]}
 
-Input: "через 2 минуты снять с плиты"
-Output: [{"task":"Снять с плиты","project":"${DEFAULT_PROJECT_NAME}","deadline":{"type":"relative","amount":2,"unit":"minute"},"reminder":null,"recurrence":null}]
+Input: "напомни через 2 минуты снять сковородку"
+Output: {"intent":"new_tasks","tasks":[{"task":"Снять сковородку","project":"${DEFAULT_PROJECT_NAME}","deadline":{"type":"relative","amount":2,"unit":"minute"},"reminder":null,"recurrence":null}]}
 
-Input: "напомни через 2 минуты снять сковородку с плиты"
-Output: [{"task":"Снять сковородку с плиты","project":"${DEFAULT_PROJECT_NAME}","deadline":{"type":"relative","amount":2,"unit":"minute"},"reminder":null,"recurrence":null}]
+Input: "удали задачу 3"
+Output: {"intent":"actions","actions":[{"action":"delete","taskNumber":3,"taskName":null}]}
 
-Input: "напомни через 5 минут позвонить маме"
-Output: [{"task":"Позвонить маме","project":"${DEFAULT_PROJECT_NAME}","deadline":{"type":"relative","amount":5,"unit":"minute"},"reminder":null,"recurrence":null}]
+Input: "задача купить молоко готова"
+Output: {"intent":"actions","actions":[{"action":"complete","taskNumber":null,"taskName":"купить молоко"}]}
 
-Input: "напомни через час купить молоко"
-Output: [{"task":"Купить молоко","project":"${DEFAULT_PROJECT_NAME}","deadline":{"type":"relative","amount":1,"unit":"hour"},"reminder":null,"recurrence":null}]
+Input: "переименуй задачу 1 в Купить кефир"
+Output: {"intent":"actions","actions":[{"action":"rename","taskNumber":1,"taskName":null,"newTitle":"Купить кефир"}]}
 
-Input: "на 8 марта поздравить маму"
-Output: [{"task":"Поздравить маму","project":"${DEFAULT_PROJECT_NAME}","deadline":{"type":"date","day":8,"month":3,"year":null,"time":null},"reminder":null,"recurrence":null}]
+Input: "перенеси задачу 2 в проект Личное"
+Output: {"intent":"actions","actions":[{"action":"move_project","taskNumber":2,"taskName":null,"newProject":"Личное"}]}
 
-Input: "сдать отчёт до пятницы, напомни за день"
-Output: [{"task":"Сдать отчёт","project":"${DEFAULT_PROJECT_NAME}","deadline":{"type":"weekday","weekday":5,"time":null},"reminder":{"amount":1,"unit":"day"},"recurrence":null}]
+Input: "перенеси дедлайн задачи 1 на пятницу"
+Output: {"intent":"actions","actions":[{"action":"change_deadline","taskNumber":1,"taskName":null,"newDeadline":{"type":"weekday","weekday":5,"time":null}}]}
 
-Input: "завтра в 10 позвонить врачу"
-Output: [{"task":"Позвонить врачу","project":"${DEFAULT_PROJECT_NAME}","deadline":{"type":"tomorrow","time":"10:00"},"reminder":null,"recurrence":null}]
+Input: "удали задачи 1 и 3"
+Output: {"intent":"actions","actions":[{"action":"delete","taskNumber":1,"taskName":null},{"action":"delete","taskNumber":3,"taskName":null}]}
 
-Input: "каждую пятницу в 10:00 созвон"
-Output: [{"task":"Созвон","project":"${DEFAULT_PROJECT_NAME}","deadline":null,"reminder":null,"recurrence":{"period":"weekly","dayOfWeek":5,"dayOfMonth":null,"time":"10:00"}}]
-
-Input: "Work\\n- тесты\\n- баг\\nЛичное\\n- молоко"
-Output: [{"task":"Тесты","project":"Work","deadline":null,"reminder":null,"recurrence":null},{"task":"Баг","project":"Work","deadline":null,"reminder":null,"recurrence":null},{"task":"Молоко","project":"Личное","deadline":null,"reminder":null,"recurrence":null}]`;
+Input: "Work\\n- тесты\\n- баг"
+Output: {"intent":"new_tasks","tasks":[{"task":"Тесты","project":"Work","deadline":null,"reminder":null,"recurrence":null},{"task":"Баг","project":"Work","deadline":null,"reminder":null,"recurrence":null}]}`;
 
 // --- JSON extraction ---
 
-function extractJsonArray(raw: string): ParsedTaskRaw[] {
-	const arrayStart = raw.indexOf('[');
+function extractJson(raw: string): AIParseResult {
 	const objectStart = raw.indexOf('{');
-
-	if (arrayStart === -1 && objectStart === -1) {
+	if (objectStart === -1) {
 		throw new Error(`No JSON found in AI response: ${raw.slice(0, 200)}`);
 	}
 
-	const isArray = arrayStart !== -1 && (objectStart === -1 || arrayStart < objectStart);
-	const openChar = isArray ? '[' : '{';
-	const closeChar = isArray ? ']' : '}';
-	const start = isArray ? arrayStart : objectStart;
-
 	let depth = 0;
-	for (let i = start; i < raw.length; i++) {
-		if (raw[i] === openChar) depth++;
-		if (raw[i] === closeChar) depth--;
+	for (let i = objectStart; i < raw.length; i++) {
+		if (raw[i] === '{') depth++;
+		if (raw[i] === '}') depth--;
 		if (depth === 0) {
-			const parsed = JSON.parse(raw.slice(start, i + 1)) as ParsedTaskRaw | ParsedTaskRaw[];
-			return Array.isArray(parsed) ? parsed : [parsed];
+			return JSON.parse(raw.slice(objectStart, i + 1)) as AIParseResult;
 		}
 	}
 
 	throw new Error(`Unclosed JSON in AI response: ${raw.slice(0, 200)}`);
 }
 
-// --- Time resolution (code does all the math) ---
+// --- Time resolution ---
 
 const UNIT_MS: Record<TimeUnit, number> = {
 	minute: 60_000,
@@ -139,10 +153,10 @@ function getLocalParts(date: Date, timezone: string): Record<string, string> {
 		second: '2-digit',
 		hour12: false,
 	});
-	return Object.fromEntries(fmt.formatToParts(date).map((p) => [p.type, p.value]));
+	return Object.fromEntries(fmt.formatToParts(date).map((pt) => [pt.type, pt.value]));
 }
 
-function p(parts: Record<string, string>, key: string): string {
+function lp(parts: Record<string, string>, key: string): string {
 	return parts[key] ?? '0';
 }
 
@@ -164,7 +178,6 @@ function normalizeUtcOffset(raw: string): string {
 
 function toIsoWithOffset(date: Date, timezone: string): string {
 	const parts = getLocalParts(date, timezone);
-
 	const offsetFmt = new Intl.DateTimeFormat('en-US', {
 		timeZone: timezone,
 		timeZoneName: 'shortOffset',
@@ -172,8 +185,7 @@ function toIsoWithOffset(date: Date, timezone: string): string {
 	const tzPart = offsetFmt.formatToParts(date).find((pt) => pt.type === 'timeZoneName');
 	const rawOffset = tzPart?.value?.replace('GMT', '') || '';
 	const offset = normalizeUtcOffset(rawOffset);
-
-	return `${p(parts, 'year')}-${p(parts, 'month')}-${p(parts, 'day')}T${p(parts, 'hour')}:${p(parts, 'minute')}:${p(parts, 'second')}${offset}`;
+	return `${lp(parts, 'year')}-${lp(parts, 'month')}-${lp(parts, 'day')}T${lp(parts, 'hour')}:${lp(parts, 'minute')}:${lp(parts, 'second')}${offset}`;
 }
 
 function buildDateInTimezone(
@@ -186,35 +198,36 @@ function buildDateInTimezone(
 ): Date {
 	const guess = new Date(Date.UTC(year, month - 1, day, hour, minute, 0));
 	const parts = getLocalParts(guess, timezone);
-	const localHour = Number.parseInt(p(parts, 'hour'), 10);
+	const localHour = Number.parseInt(lp(parts, 'hour'), 10);
 	const diffMs = (localHour - hour) * 3_600_000;
 	return new Date(guess.getTime() - diffMs);
 }
 
-function resolveDeadline(deadline: DeadlineExpression, now: Date, timezone: string): string {
+export function resolveDeadline(deadline: DeadlineExpression, now: Date, timezone: string): string {
 	const parts = getLocalParts(now, timezone);
-	const localYear = Number.parseInt(p(parts, 'year'), 10);
-	const localMonth = Number.parseInt(p(parts, 'month'), 10);
-	const localDay = Number.parseInt(p(parts, 'day'), 10);
+	const localYear = Number.parseInt(lp(parts, 'year'), 10);
+	const localMonth = Number.parseInt(lp(parts, 'month'), 10);
+	const localDay = Number.parseInt(lp(parts, 'day'), 10);
 
 	switch (deadline.type) {
 		case 'relative': {
 			const ms = deadline.amount * UNIT_MS[deadline.unit];
 			return toIsoWithOffset(new Date(now.getTime() + ms), timezone);
 		}
-
 		case 'tomorrow': {
 			const [h, m] = parseHM(deadline.time, 12, 0);
-			const tmrw = buildDateInTimezone(timezone, localYear, localMonth, localDay + 1, h, m);
-			return toIsoWithOffset(tmrw, timezone);
+			return toIsoWithOffset(
+				buildDateInTimezone(timezone, localYear, localMonth, localDay + 1, h, m),
+				timezone,
+			);
 		}
-
 		case 'day_after_tomorrow': {
 			const [h, m] = parseHM(deadline.time, 12, 0);
-			const dat = buildDateInTimezone(timezone, localYear, localMonth, localDay + 2, h, m);
-			return toIsoWithOffset(dat, timezone);
+			return toIsoWithOffset(
+				buildDateInTimezone(timezone, localYear, localMonth, localDay + 2, h, m),
+				timezone,
+			);
 		}
-
 		case 'weekday': {
 			const localDow = buildDateInTimezone(
 				timezone,
@@ -227,17 +240,11 @@ function resolveDeadline(deadline: DeadlineExpression, now: Date, timezone: stri
 			let daysAhead = (deadline.weekday - localDow + 7) % 7;
 			if (daysAhead === 0) daysAhead = 7;
 			const [h, m] = parseHM(deadline.time, 23, 59);
-			const target = buildDateInTimezone(
+			return toIsoWithOffset(
+				buildDateInTimezone(timezone, localYear, localMonth, localDay + daysAhead, h, m),
 				timezone,
-				localYear,
-				localMonth,
-				localDay + daysAhead,
-				h,
-				m,
 			);
-			return toIsoWithOffset(target, timezone);
 		}
-
 		case 'date': {
 			const year = deadline.year ?? localYear;
 			const [h, m] = parseHM(deadline.time, 12, 0);
@@ -247,7 +254,6 @@ function resolveDeadline(deadline: DeadlineExpression, now: Date, timezone: stri
 			}
 			return toIsoWithOffset(target, timezone);
 		}
-
 		default: {
 			const _exhaustive: never = deadline;
 			return _exhaustive;
@@ -261,7 +267,34 @@ function resolveReminder(reminder: ReminderExpression, dueDateIso: string): stri
 	return new Date(dueDate.getTime() - ms).toISOString();
 }
 
-// --- Main parse function ---
+// --- Task context for AI ---
+
+function buildTaskContext(tasks: TaskWithProject[]): string {
+	if (tasks.length === 0) return 'User has no tasks.';
+
+	const grouped = new Map<string, TaskWithProject[]>();
+	for (const task of tasks) {
+		const name = task.project.name;
+		const arr = grouped.get(name);
+		if (arr) arr.push(task);
+		else grouped.set(name, [task]);
+	}
+
+	const lines: string[] = ['Current user tasks:'];
+	let index = 1;
+	for (const [projectName, projectTasks] of grouped) {
+		for (const task of projectTasks) {
+			const deadline = task.dueDate
+				? ` | deadline: ${task.dueDate.toISOString().slice(0, 16)}`
+				: '';
+			lines.push(`${index}. ${task.title} [${projectName}]${deadline}`);
+			index++;
+		}
+	}
+	return lines.join('\n');
+}
+
+// --- Convert raw to final ---
 
 function rawToFinal(raw: ParsedTaskRaw, now: Date, timezone: string): ParsedTask {
 	const dueDate = raw.deadline ? resolveDeadline(raw.deadline, now, timezone) : null;
@@ -290,22 +323,36 @@ function rawToFinal(raw: ParsedTaskRaw, now: Date, timezone: string): ParsedTask
 	};
 }
 
-export async function parseTaskMessage(text: string, timezone: string): Promise<ParsedTask[]> {
+// --- Main parse function ---
+
+export type UserMessageResult =
+	| { intent: 'new_tasks'; tasks: ParsedTask[] }
+	| { intent: 'actions'; actions: TaskActionRaw[] };
+
+export async function parseUserMessage(
+	text: string,
+	timezone: string,
+	currentTasks: TaskWithProject[],
+): Promise<UserMessageResult> {
 	const now = new Date();
 
 	const weekdays = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 	const localParts = getLocalParts(now, timezone);
 	const localDate = buildDateInTimezone(
 		timezone,
-		Number.parseInt(p(localParts, 'year'), 10),
-		Number.parseInt(p(localParts, 'month'), 10),
-		Number.parseInt(p(localParts, 'day'), 10),
+		Number.parseInt(lp(localParts, 'year'), 10),
+		Number.parseInt(lp(localParts, 'month'), 10),
+		Number.parseInt(lp(localParts, 'day'), 10),
 		12,
 		0,
 	);
 	const weekday = weekdays[localDate.getDay()] ?? 'Monday';
+	const taskContext = buildTaskContext(currentTasks);
 
-	const systemPrompt = SYSTEM_PROMPT.replace('{weekday}', weekday);
+	const systemPrompt = SYSTEM_PROMPT.replace('{weekday}', weekday).replace(
+		'{taskContext}',
+		taskContext,
+	);
 
 	const completion = await ai.chat.completions.create({
 		model: AI_CHAT_MODEL,
@@ -324,8 +371,13 @@ export async function parseTaskMessage(text: string, timezone: string): Promise<
 
 	console.log('[AI raw response]', content);
 
-	const rawTasks = extractJsonArray(content);
-	console.log('[AI parsed tasks]', JSON.stringify(rawTasks));
+	const parsed = extractJson(content);
+	console.log('[AI parsed]', JSON.stringify(parsed));
 
-	return rawTasks.map((raw) => rawToFinal(raw, now, timezone));
+	if (parsed.intent === 'actions') {
+		return { intent: 'actions', actions: parsed.actions };
+	}
+
+	const tasks = parsed.tasks.map((raw) => rawToFinal(raw, now, timezone));
+	return { intent: 'new_tasks', tasks };
 }

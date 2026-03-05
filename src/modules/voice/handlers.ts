@@ -1,9 +1,10 @@
 import { Composer } from 'grammy';
-import { parseTaskMessage } from '../../services/ai.js';
+import { parseUserMessage } from '../../services/ai.js';
 import { isSTTConfigured, transcribeAudio } from '../../services/stt.js';
 import type { BotContext } from '../../types/index.js';
+import { resolveAndExecuteActions } from '../tasks/actions.js';
 import { refreshPinnedMessage } from '../tasks/pinned.js';
-import { addTaskFromParsed, ensureUser } from '../tasks/service.js';
+import { addTaskFromParsed, ensureUser, getActiveTasks } from '../tasks/service.js';
 
 export const voiceModule = new Composer<BotContext>();
 
@@ -30,14 +31,28 @@ voiceModule.on('message:voice', async (ctx) => {
 		await ctx.api.editMessageText(
 			Number(chatId),
 			processingMsg.message_id,
-			`🎤 Распознано: "${transcribedText}"\n⏳ Обрабатываю задачу...`,
+			`🎤 Распознано: "${transcribedText}"\n⏳ Обрабатываю...`,
 		);
 
 		const user = await ensureUser(telegramId, chatId);
-		const tasks = await parseTaskMessage(transcribedText, user.timezone);
+		const currentTasks = await getActiveTasks(user.id);
+		const result = await parseUserMessage(transcribedText, user.timezone, currentTasks);
+
+		if (result.intent === 'actions') {
+			const actionResults = await resolveAndExecuteActions(result.actions, user.id, user.timezone);
+			const lines = actionResults.map((r) => (r.success ? r.message : `⚠️ ${r.message}`));
+			await ctx.api.editMessageText(
+				Number(chatId),
+				processingMsg.message_id,
+				`${lines.join('\n')}\n\n🎤 _"${transcribedText}"_`,
+				{ parse_mode: 'Markdown' },
+			);
+			await refreshPinnedMessage(ctx, telegramId, chatId, { resend: true });
+			return;
+		}
 
 		const resultLines: string[] = [];
-		for (const parsed of tasks) {
+		for (const parsed of result.tasks) {
 			await addTaskFromParsed(
 				telegramId,
 				chatId,
@@ -50,7 +65,9 @@ voiceModule.on('message:voice', async (ctx) => {
 		}
 
 		const header =
-			tasks.length === 1 ? '✅ Задача добавлена!' : `✅ Добавлено задач: ${tasks.length}`;
+			result.tasks.length === 1
+				? '✅ Задача добавлена!'
+				: `✅ Добавлено задач: ${result.tasks.length}`;
 
 		await ctx.api.editMessageText(
 			Number(chatId),

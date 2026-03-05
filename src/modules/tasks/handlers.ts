@@ -1,7 +1,8 @@
 import { find as findTimezone } from 'geo-tz';
 import { Composer, InlineKeyboard } from 'grammy';
-import { parseTaskMessage } from '../../services/ai.js';
+import { parseUserMessage } from '../../services/ai.js';
 import type { BotContext } from '../../types/index.js';
+import { resolveAndExecuteActions } from './actions.js';
 import { parseCallbackData } from './keyboard.js';
 import { refreshPinnedMessage } from './pinned.js';
 import {
@@ -9,6 +10,7 @@ import {
 	completeTask,
 	deleteTask,
 	ensureUser,
+	getActiveTasks,
 	updateUserTimezone,
 } from './service.js';
 
@@ -119,12 +121,19 @@ tasksModule.command('help', async (ctx) => {
 			'*Как добавить задачу:*\n' +
 			'Просто отправь текстовое или голосовое сообщение\\. ' +
 			'AI автоматически распознает название задачи, проект, дату и время\\.\n\n' +
-			'*Примеры сообщений:*\n' +
+			'*Примеры добавления:*\n' +
 			'• "Написать отчёт проект Work до пятницы"\n' +
 			'• "Купить молоко завтра в 10:00"\n' +
 			'• "Через 2 часа созвон с командой"\n' +
 			'• "Каждую пятницу в 10:00 стендап" \\(повторяющаяся\\)\n' +
 			'• "Раз в месяц 1 числа оплата квартиры"\n\n' +
+			'*Управление задачами текстом/голосом:*\n' +
+			'• "удали задачу 3"\n' +
+			'• "задача купить молоко готова"\n' +
+			'• "переименуй задачу 1 в Позвонить маме"\n' +
+			'• "перенеси задачу 2 в проект Работа"\n' +
+			'• "перенеси дедлайн задачи 1 на завтра"\n' +
+			'• "удали задачи 1 и 3"\n\n' +
 			'*Команды:*\n' +
 			'/start — запуск бота и выбор часового пояса\n' +
 			'/tasks — показать список активных задач\n' +
@@ -132,8 +141,7 @@ tasksModule.command('help', async (ctx) => {
 			'/recurring — управление повторяющимися напоминаниями\n' +
 			'/timezone — сменить часовой пояс\n' +
 			'/help — эта справка\n\n' +
-			'*Управление задачами:*\n' +
-			'В закреплённом сообщении рядом с каждой задачей есть кнопки:\n' +
+			'*Кнопки в закреплённом сообщении:*\n' +
 			'✅ — отметить выполненной\n' +
 			'🗑 — удалить задачу\n' +
 			'🔄 — обновить список\n\n' +
@@ -246,17 +254,26 @@ tasksModule.on('message:text', async (ctx) => {
 	const telegramId = BigInt(ctx.from.id);
 	const chatId = BigInt(ctx.chat.id);
 
-	const processingMsg = await ctx.reply('⏳ Обрабатываю задачу...');
+	const processingMsg = await ctx.reply('⏳ Обрабатываю...');
 
 	try {
 		const user = await ensureUser(telegramId, chatId);
-		const tasks = await parseTaskMessage(text, user.timezone);
+		const currentTasks = await getActiveTasks(user.id);
+		const result = await parseUserMessage(text, user.timezone, currentTasks);
+
+		if (result.intent === 'actions') {
+			const actionResults = await resolveAndExecuteActions(result.actions, user.id, user.timezone);
+			const lines = actionResults.map((r) => (r.success ? r.message : `⚠️ ${r.message}`));
+			await ctx.api.editMessageText(Number(chatId), processingMsg.message_id, lines.join('\n'));
+			await refreshPinnedMessage(ctx, telegramId, chatId, { resend: true });
+			return;
+		}
 
 		const resultLines: string[] = [];
 		let recurringCount = 0;
 		let regularCount = 0;
 
-		for (const parsed of tasks) {
+		for (const parsed of result.tasks) {
 			if (parsed.recurrence) {
 				const { createRecurringFromParsed } = await import('../recurring/service.js');
 				const recurring = await createRecurringFromParsed(user.id, user.timezone, parsed);
@@ -322,7 +339,7 @@ tasksModule.on('message:text', async (ctx) => {
 		await ctx.api.editMessageText(
 			Number(chatId),
 			processingMsg.message_id,
-			'❌ Не удалось обработать задачу. Попробуйте ещё раз.',
+			'❌ Не удалось обработать сообщение. Попробуйте ещё раз.',
 		);
 	}
 });
