@@ -1,8 +1,8 @@
-import Groq from 'groq-sdk';
-import { config, DEFAULT_PROJECT_NAME, GROQ_MODEL } from '../config.js';
+import OpenAI from 'openai';
+import { AI_CHAT_MODEL, config, DEFAULT_PROJECT_NAME } from '../config.js';
 import type { ParsedTask } from '../types/index.js';
 
-const groq = new Groq({ apiKey: config.groqApiKey });
+const ai = new OpenAI({ apiKey: config.aiApiKey, baseURL: config.aiBaseUrl });
 
 const SYSTEM_PROMPT = `You are a task parser for a Telegram task manager bot.
 The user sends you a message describing one or MULTIPLE tasks.
@@ -110,8 +110,8 @@ export async function parseTaskMessage(text: string, timezone: string): Promise<
 		timezone,
 	);
 
-	const completion = await groq.chat.completions.create({
-		model: GROQ_MODEL,
+	const completion = await ai.chat.completions.create({
+		model: AI_CHAT_MODEL,
 		messages: [
 			{ role: 'system', content: systemPrompt },
 			{ role: 'user', content: text },

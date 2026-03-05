@@ -11,10 +11,11 @@ function getEnvOrThrow(key: string): string {
 export const config = {
 	botToken: getEnvOrThrow('BOT_TOKEN'),
 	databaseUrl: getEnvOrThrow('DATABASE_URL'),
-	groqApiKey: getEnvOrThrow('GROQ_API_KEY'),
+	aiApiKey: process.env.AI_API_KEY || 'openai',
+	aiBaseUrl: process.env.AI_BASE_URL || 'https://api.onlysq.ru/ai/openai/',
 } as const;
 
-export const GROQ_MODEL = 'llama-3.1-8b-instant';
-export const GROQ_WHISPER_MODEL = 'whisper-large-v3-turbo';
+export const AI_CHAT_MODEL = process.env.AI_CHAT_MODEL || 'gpt-4o-mini';
+export const AI_STT_MODEL = process.env.AI_STT_MODEL || 'whisper-1';
 export const REMINDER_CHECK_CRON = '* * * * *';
 export const DEFAULT_PROJECT_NAME = 'General';

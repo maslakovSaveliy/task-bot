@@ -1,13 +1,13 @@
-import Groq from 'groq-sdk';
-import { config, GROQ_WHISPER_MODEL } from '../config.js';
+import OpenAI from 'openai';
+import { AI_STT_MODEL, config } from '../config.js';
 
-const groq = new Groq({ apiKey: config.groqApiKey });
+const ai = new OpenAI({ apiKey: config.aiApiKey, baseURL: config.aiBaseUrl });
 
 export async function transcribeAudio(audioBuffer: ArrayBuffer, filename: string): Promise<string> {
 	const file = new File([audioBuffer], filename, { type: 'audio/ogg' });
 
-	const transcription = await groq.audio.transcriptions.create({
-		model: GROQ_WHISPER_MODEL,
+	const transcription = await ai.audio.transcriptions.create({
+		model: AI_STT_MODEL,
 		file,
 		language: 'ru',
 	});
