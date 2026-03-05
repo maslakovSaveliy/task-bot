@@ -8,8 +8,9 @@ const SYSTEM_PROMPT = `You are a task parser for a Telegram task manager bot.
 The user sends you a message describing one or MULTIPLE tasks.
 You must extract structured data from the message.
 
-Current date and time: {currentDateTime}
+Current date and time (ISO 8601): {currentDateTime}
 User timezone: {timezone}
+IMPORTANT: All dueDate and remindAt values MUST use the SAME UTC offset as shown in the current date/time above.
 
 Return a JSON ARRAY of task objects. Each object has these fields:
 - "task": string — the task title/description, cleaned up and concise
@@ -101,9 +102,35 @@ function normalizeTask(raw: ParsedTask): ParsedTask {
 	};
 }
 
+function toIsoWithOffset(date: Date, timezone: string): string {
+	const formatter = new Intl.DateTimeFormat('en-CA', {
+		timeZone: timezone,
+		year: 'numeric',
+		month: '2-digit',
+		day: '2-digit',
+		hour: '2-digit',
+		minute: '2-digit',
+		second: '2-digit',
+		hour12: false,
+	});
+
+	const parts = Object.fromEntries(formatter.formatToParts(date).map((p) => [p.type, p.value]));
+
+	const offsetFormatter = new Intl.DateTimeFormat('en-US', {
+		timeZone: timezone,
+		timeZoneName: 'shortOffset',
+	});
+	const offsetPart = offsetFormatter.formatToParts(date).find((p) => p.type === 'timeZoneName');
+	const rawOffset = offsetPart?.value?.replace('GMT', '') || '+00:00';
+	const offset =
+		rawOffset === '' ? '+00:00' : rawOffset.includes(':') ? rawOffset : `${rawOffset}:00`;
+
+	return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}:${parts.second}${offset}`;
+}
+
 export async function parseTaskMessage(text: string, timezone: string): Promise<ParsedTask[]> {
 	const now = new Date();
-	const currentDateTime = now.toLocaleString('ru-RU', { timeZone: timezone });
+	const currentDateTime = toIsoWithOffset(now, timezone);
 
 	const systemPrompt = SYSTEM_PROMPT.replace('{currentDateTime}', currentDateTime).replace(
 		'{timezone}',
