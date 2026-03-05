@@ -80,7 +80,8 @@ Action examples:
 CRITICAL RULES:
 - "напомни через X <что-то>" = new_tasks with deadline relative, NOT an action.
 - "удали", "убери", "выполни", "готово", "переименуй", "перенеси в проект", "измени дедлайн" = actions.
-- Multiple tasks/actions in one message → return ALL.
+- Multiple tasks/actions in one message → return ALL of them. Do NOT skip any.
+- When user sends a list with categories/headings followed by bullet points (•, -, *), EACH bullet point is a SEPARATE task. The heading is the project name. Parse ALL tasks from ALL categories.
 - Single item → still wrap in array.
 - Return ONLY JSON. No markdown, no backticks, no explanation.
 
@@ -111,7 +112,10 @@ Input: "удали задачи 1 и 3"
 Output: {"intent":"actions","actions":[{"action":"delete","taskNumber":1,"taskName":null},{"action":"delete","taskNumber":3,"taskName":null}]}
 
 Input: "Work\\n- тесты\\n- баг"
-Output: {"intent":"new_tasks","tasks":[{"task":"Тесты","project":"Work","deadline":null,"reminder":null,"recurrence":null},{"task":"Баг","project":"Work","deadline":null,"reminder":null,"recurrence":null}]}`;
+Output: {"intent":"new_tasks","tasks":[{"task":"Тесты","project":"Work","deadline":null,"reminder":null,"recurrence":null},{"task":"Баг","project":"Work","deadline":null,"reminder":null,"recurrence":null}]}
+
+Input: "Круги\\n• задача 1\\n\\nРабота\\n• задача 2\\n- задача 3\\n• задача 4\\n\\nЛичное\\n• задача 5"
+Output: {"intent":"new_tasks","tasks":[{"task":"Задача 1","project":"Круги","deadline":null,"reminder":null,"recurrence":null},{"task":"Задача 2","project":"Работа","deadline":null,"reminder":null,"recurrence":null},{"task":"Задача 3","project":"Работа","deadline":null,"reminder":null,"recurrence":null},{"task":"Задача 4","project":"Работа","deadline":null,"reminder":null,"recurrence":null},{"task":"Задача 5","project":"Личное","deadline":null,"reminder":null,"recurrence":null}]}`;
 
 // --- JSON extraction ---
 
@@ -361,7 +365,7 @@ export async function parseUserMessage(
 			{ role: 'user', content: text },
 		],
 		temperature: 0.1,
-		max_tokens: 2048,
+		max_tokens: 4096,
 	});
 
 	const content = completion.choices[0]?.message?.content;
