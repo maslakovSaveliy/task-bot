@@ -15,7 +15,7 @@ export const config = {
 	aiBaseUrl: process.env.AI_BASE_URL || 'https://api.onlysq.ru/ai/openai/',
 } as const;
 
-export const AI_CHAT_MODEL = process.env.AI_CHAT_MODEL || 'gpt-4o-mini';
+export const AI_CHAT_MODEL = process.env.AI_CHAT_MODEL || 'llama3.1-8b';
 export const AI_STT_MODEL = process.env.AI_STT_MODEL || 'whisper-1';
 export const REMINDER_CHECK_CRON = '* * * * *';
 export const DEFAULT_PROJECT_NAME = 'General';
