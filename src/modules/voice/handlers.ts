@@ -1,6 +1,6 @@
 import { Composer } from 'grammy';
 import { parseTaskMessage } from '../../services/ai.js';
-import { transcribeAudio } from '../../services/stt.js';
+import { isSTTConfigured, transcribeAudio } from '../../services/stt.js';
 import type { BotContext } from '../../types/index.js';
 import { refreshPinnedMessage } from '../tasks/pinned.js';
 import { addTaskFromParsed, ensureUser } from '../tasks/service.js';
@@ -8,6 +8,11 @@ import { addTaskFromParsed, ensureUser } from '../tasks/service.js';
 export const voiceModule = new Composer<BotContext>();
 
 voiceModule.on('message:voice', async (ctx) => {
+	if (!isSTTConfigured()) {
+		await ctx.reply('🎤 Распознавание голоса не настроено. Отправьте текстовое сообщение.');
+		return;
+	}
+
 	const telegramId = BigInt(ctx.from.id);
 	const chatId = BigInt(ctx.chat.id);
 

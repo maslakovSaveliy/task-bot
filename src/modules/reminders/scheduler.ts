@@ -17,7 +17,7 @@ async function processAdvanceReminders(bot: Bot<BotContext>) {
 		const chatId = Number(task.user.chatId);
 
 		const dueDateStr = task.dueDate
-			? `\n📅 Дедлайн: ${task.dueDate.toLocaleString('ru-RU', { timeZone: task.user.timezone })}`
+			? `\n📅 Дедлайн: ${task.dueDate.toLocaleString('ru-RU', { timeZone: task.user.timezone, day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })}`
 			: '';
 
 		await bot.api.sendMessage(

@@ -281,16 +281,20 @@ tasksModule.on('message:text', async (ctx) => {
 				);
 
 				let taskLine = `📁 ${parsed.project}\n📝 ${parsed.task}`;
+				const dateFmtOpts: Intl.DateTimeFormatOptions = {
+					timeZone: user.timezone,
+					day: '2-digit',
+					month: '2-digit',
+					year: 'numeric',
+					hour: '2-digit',
+					minute: '2-digit',
+				};
 				if (parsed.dueDate) {
-					const dateStr = new Date(parsed.dueDate).toLocaleString('ru-RU', {
-						timeZone: user.timezone,
-					});
+					const dateStr = new Date(parsed.dueDate).toLocaleString('ru-RU', dateFmtOpts);
 					taskLine += `\n📅 Срок: ${dateStr}`;
 				}
 				if (parsed.remindAt) {
-					const remindStr = new Date(parsed.remindAt).toLocaleString('ru-RU', {
-						timeZone: user.timezone,
-					});
+					const remindStr = new Date(parsed.remindAt).toLocaleString('ru-RU', dateFmtOpts);
 					taskLine += `\n🔔 Напомню заранее: ${remindStr}`;
 				}
 				resultLines.push(taskLine);
