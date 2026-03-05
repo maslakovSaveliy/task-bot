@@ -9,6 +9,35 @@ export type BotContext = Context & SessionFlavor<SessionData> & ConversationFlav
 
 export type RecurrenceType = 'weekly' | 'monthly' | 'yearly';
 
+export type TimeUnit = 'minute' | 'hour' | 'day' | 'week';
+
+export type DeadlineExpression =
+	| { type: 'relative'; amount: number; unit: TimeUnit }
+	| { type: 'date'; day: number; month: number; year: number | null; time: string | null }
+	| { type: 'weekday'; weekday: number; time: string | null }
+	| { type: 'tomorrow'; time: string | null }
+	| { type: 'day_after_tomorrow'; time: string | null };
+
+export interface ReminderExpression {
+	amount: number;
+	unit: TimeUnit;
+}
+
+export interface RecurrenceExpression {
+	period: RecurrenceType;
+	dayOfWeek: number | null;
+	dayOfMonth: number | null;
+	time: string | null;
+}
+
+export interface ParsedTaskRaw {
+	task: string;
+	project: string;
+	deadline: DeadlineExpression | null;
+	reminder: ReminderExpression | null;
+	recurrence: RecurrenceExpression | null;
+}
+
 export interface ParsedTask {
 	task: string;
 	project: string;
