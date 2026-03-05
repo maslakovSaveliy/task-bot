@@ -152,6 +152,16 @@ function parseHM(time: string | null, defaultH: number, defaultM: number): [numb
 	return [Number(segments[0] ?? defaultH), Number(segments[1] ?? defaultM)];
 }
 
+function normalizeUtcOffset(raw: string): string {
+	if (!raw || raw === '') return '+00:00';
+	const sign = raw[0] === '-' ? '-' : '+';
+	const digits = raw.replace(/[^0-9:]/g, '');
+	const parts = digits.split(':');
+	const hours = (parts[0] ?? '0').padStart(2, '0');
+	const minutes = (parts[1] ?? '00').padStart(2, '0');
+	return `${sign}${hours}:${minutes}`;
+}
+
 function toIsoWithOffset(date: Date, timezone: string): string {
 	const parts = getLocalParts(date, timezone);
 
@@ -160,9 +170,8 @@ function toIsoWithOffset(date: Date, timezone: string): string {
 		timeZoneName: 'shortOffset',
 	});
 	const tzPart = offsetFmt.formatToParts(date).find((pt) => pt.type === 'timeZoneName');
-	const rawOffset = tzPart?.value?.replace('GMT', '') || '+00:00';
-	const offset =
-		rawOffset === '' ? '+00:00' : rawOffset.includes(':') ? rawOffset : `${rawOffset}:00`;
+	const rawOffset = tzPart?.value?.replace('GMT', '') || '';
+	const offset = normalizeUtcOffset(rawOffset);
 
 	return `${p(parts, 'year')}-${p(parts, 'month')}-${p(parts, 'day')}T${p(parts, 'hour')}:${p(parts, 'minute')}:${p(parts, 'second')}${offset}`;
 }
