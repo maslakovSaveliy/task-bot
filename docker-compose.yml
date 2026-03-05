@@ -28,10 +28,9 @@ services:
       AI_API_KEY: ${AI_API_KEY:-openai}
       AI_BASE_URL: ${AI_BASE_URL:-https://api.onlysq.ru/ai/openai/}
       AI_CHAT_MODEL: ${AI_CHAT_MODEL:-llama3.1-8b}
-      AI_STT_MODEL: ${AI_STT_MODEL:-whisper-1}
+      AI_STT_MODEL: ${AI_STT_MODEL:-whisper-large-v3-turbo}
       STT_API_KEY: ${STT_API_KEY:-}
       STT_BASE_URL: ${STT_BASE_URL:-}
-      AI_STT_MODEL: ${AI_STT_MODEL:-whisper-large-v3-turbo}
     command: >
       sh -c "pnpm exec prisma db push --accept-data-loss && pnpm start"
 
