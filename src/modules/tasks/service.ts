@@ -121,8 +121,20 @@ export async function renameTask(taskId: number, userId: number, newTitle: strin
 	});
 }
 
+export async function findExistingProject(userId: number, name: string) {
+	const exact = await prisma.project.findUnique({
+		where: { name_userId: { name, userId } },
+	});
+	if (exact) return exact;
+
+	const userProjects = await prisma.project.findMany({ where: { userId } });
+	const needle = name.toLowerCase();
+	return userProjects.find((p) => p.name.toLowerCase() === needle) ?? null;
+}
+
 export async function moveTaskToProject(taskId: number, userId: number, newProjectName: string) {
-	const project = await ensureProject(newProjectName, userId);
+	const existing = await findExistingProject(userId, newProjectName);
+	const project = existing ?? (await ensureProject(newProjectName, userId));
 	return prisma.task.updateMany({
 		where: { id: taskId, userId },
 		data: { projectId: project.id },

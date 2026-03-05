@@ -3,6 +3,7 @@ import type { ActionResult, TaskActionRaw, TaskWithProject } from '../../types/i
 import {
 	completeTask,
 	deleteTask,
+	findExistingProject,
 	getActiveTasks,
 	moveTaskToProject,
 	renameTask,
@@ -88,11 +89,13 @@ export async function resolveAndExecuteActions(
 				break;
 			}
 			case 'move_project': {
-				const newProject = action.newProject ?? task.project.name;
-				await moveTaskToProject(task.id, userId, newProject);
+				const requestedProject = action.newProject ?? task.project.name;
+				await moveTaskToProject(task.id, userId, requestedProject);
+				const resolved = await findExistingProject(userId, requestedProject);
+				const actualName = resolved?.name ?? requestedProject;
 				results.push({
 					success: true,
-					message: `📂 ${label}: "${task.title}" → ${newProject}`,
+					message: `📂 ${label}: "${task.title}" → ${actualName}`,
 				});
 				break;
 			}

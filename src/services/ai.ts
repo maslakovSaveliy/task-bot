@@ -82,6 +82,8 @@ CRITICAL RULES:
 - "удали", "убери", "выполни", "готово", "переименуй", "перенеси в проект", "измени дедлайн" = actions.
 - Multiple tasks/actions in one message → return ALL of them. Do NOT skip any.
 - When user sends a list with categories/headings followed by bullet points (•, -, *), EACH bullet point is a SEPARATE task. The heading is the project name. Parse ALL tasks from ALL categories.
+- For move_project: use EXACT project name from the "Current user tasks" list above (e.g. if list shows [ВПН], use "ВПН", NOT "VPN"). Match the existing project name precisely.
+- For new tasks with project names: if user mentions a project that looks like an existing one (same meaning, different script), use the EXISTING project name from the list.
 - Single item → still wrap in array.
 - Return ONLY JSON. No markdown, no backticks, no explanation.
 
