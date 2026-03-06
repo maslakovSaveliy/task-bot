@@ -5,7 +5,9 @@ import {
 	DEFAULT_PROJECT_NAME,
 	FALLBACK_CHAT_MODEL,
 	IS_GEMINI_COMPAT,
+	IS_SECONDARY_GEMINI_COMPAT,
 	PRIMARY_CHAT_MODEL,
+	SECONDARY_CHAT_MODEL,
 } from '../config.js';
 import type {
 	DeadlineExpression,
@@ -19,7 +21,29 @@ import type {
 } from '../types/index.js';
 import { PLANNER_EXAMPLES } from './ai-examples.js';
 
-const ai = new OpenAI({ apiKey: config.aiApiKey, baseURL: config.aiBaseUrl });
+type PlannerProvider = {
+	client: OpenAI;
+	isGemini: boolean;
+	label: string;
+};
+
+const primaryPlannerProvider: PlannerProvider = {
+	client: new OpenAI({ apiKey: config.aiApiKey, baseURL: config.aiBaseUrl }),
+	isGemini: IS_GEMINI_COMPAT,
+	label: 'primary',
+};
+
+const secondaryPlannerProvider: PlannerProvider | null =
+	config.secondaryAiApiKey && config.secondaryAiBaseUrl
+		? {
+				client: new OpenAI({
+					apiKey: config.secondaryAiApiKey,
+					baseURL: config.secondaryAiBaseUrl,
+				}),
+				isGemini: IS_SECONDARY_GEMINI_COMPAT,
+				label: 'secondary',
+			}
+		: null;
 
 const LOW_CONFIDENCE_THRESHOLD = 0.72;
 const CLARIFY_CONFIDENCE_THRESHOLD = 0.45;
@@ -579,6 +603,7 @@ export type UserMessageResult =
 	| { intent: 'clarify'; message: string };
 
 async function callPlanner(
+	provider: PlannerProvider,
 	model: string,
 	systemPrompt: string,
 	text: string,
@@ -594,21 +619,21 @@ async function callPlanner(
 
 	// Gemini's OpenAI-compatible endpoint is stricter than OpenAI itself.
 	// A minimal payload avoids spurious 400s on otherwise valid requests.
-	if (!IS_GEMINI_COMPAT) {
+	if (!provider.isGemini) {
 		request.temperature = 0.1;
 		request.max_tokens = 4096;
 	}
 
-	const completion = await ai.chat.completions.create(request);
+	const completion = await provider.client.chat.completions.create(request);
 
 	const content = completion.choices[0]?.message?.content;
 	if (!content) {
 		throw new Error(`Empty response from AI model ${model}`);
 	}
 
-	console.log(`[AI planner raw][${model}]`, content);
+	console.log(`[AI planner raw][${provider.label}:${model}]`, content);
 	const parsed = normalizeParsedResult(text, extractJson<PlannerResultRaw>(content));
-	console.log(`[AI planner parsed][${model}]`, JSON.stringify(parsed));
+	console.log(`[AI planner parsed][${provider.label}:${model}]`, JSON.stringify(parsed));
 	return { raw: content, parsed };
 }
 
@@ -687,26 +712,40 @@ export async function parseUserMessage(
 
 	let chosen: { raw: string; parsed: PlannerResultRaw };
 	let finalModel = PRIMARY_CHAT_MODEL;
+	let finalProvider = primaryPlannerProvider.label;
 	let fallbackReason: string | null = null;
 
 	try {
-		chosen = await callPlanner(PRIMARY_CHAT_MODEL, systemPrompt, text);
+		chosen = await callPlanner(primaryPlannerProvider, PRIMARY_CHAT_MODEL, systemPrompt, text);
 		fallbackReason = AI_AGENT_MODE ? findFallbackReason(chosen.parsed, currentTasks) : null;
 	} catch (error) {
-		const status = getErrorStatus(error);
-		const shouldRetryOnFallback =
-			AI_AGENT_MODE &&
-			!!FALLBACK_CHAT_MODEL &&
-			FALLBACK_CHAT_MODEL !== PRIMARY_CHAT_MODEL &&
-			(status === null || status >= 500);
+		if (secondaryPlannerProvider && SECONDARY_CHAT_MODEL) {
+			console.error('[AI planner primary provider failed]', error);
+			chosen = await callPlanner(
+				secondaryPlannerProvider,
+				SECONDARY_CHAT_MODEL,
+				systemPrompt,
+				text,
+			);
+			finalModel = SECONDARY_CHAT_MODEL;
+			finalProvider = secondaryPlannerProvider.label;
+			fallbackReason = null;
+		} else {
+			const status = getErrorStatus(error);
+			const shouldRetryOnFallback =
+				AI_AGENT_MODE &&
+				!!FALLBACK_CHAT_MODEL &&
+				FALLBACK_CHAT_MODEL !== PRIMARY_CHAT_MODEL &&
+				(status === null || status >= 500);
 
-		if (!shouldRetryOnFallback) {
-			throw error;
+			if (!shouldRetryOnFallback) {
+				throw error;
+			}
+			fallbackReason = 'primary_planner_failed';
+			console.error('[AI planner primary failed]', error);
+			chosen = await callPlanner(primaryPlannerProvider, FALLBACK_CHAT_MODEL, systemPrompt, text);
+			finalModel = FALLBACK_CHAT_MODEL;
 		}
-		fallbackReason = 'primary_planner_failed';
-		console.error('[AI planner primary failed]', error);
-		chosen = await callPlanner(FALLBACK_CHAT_MODEL, systemPrompt, text);
-		finalModel = FALLBACK_CHAT_MODEL;
 	}
 
 	if (
@@ -719,7 +758,7 @@ export async function parseUserMessage(
 			`[AI planner fallback] primary=${PRIMARY_CHAT_MODEL} fallback=${FALLBACK_CHAT_MODEL} reason=${fallbackReason}`,
 		);
 		try {
-			chosen = await callPlanner(FALLBACK_CHAT_MODEL, systemPrompt, text);
+			chosen = await callPlanner(primaryPlannerProvider, FALLBACK_CHAT_MODEL, systemPrompt, text);
 			finalModel = FALLBACK_CHAT_MODEL;
 			fallbackReason = null;
 		} catch (error) {
@@ -730,6 +769,7 @@ export async function parseUserMessage(
 	console.log(
 		'[AI planner final]',
 		JSON.stringify({
+			provider: finalProvider,
 			model: finalModel,
 			intent: chosen.parsed.intent,
 			confidence: chosen.parsed.confidence,

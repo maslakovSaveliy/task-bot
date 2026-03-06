@@ -113,9 +113,11 @@ docker compose --env-file .env.server -f docker-compose.yml -f docker-compose.se
 - `GEMINI_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai/`
 - `PRIMARY_CHAT_MODEL=gemini-2.5-flash`
 - `FALLBACK_CHAT_MODEL=` по умолчанию выключен, чтобы не сжигать free-tier лимит второй моделью
+- `AI_FALLBACK_BASE_URL=https://api.onlysq.ru/ai/openai/`
+- `AI_FALLBACK_CHAT_MODEL=llama3.1-8b`
 - `AI_AGENT_MODE=true`
 
-Если на конкретном сервере прямой доступ к Gemini всё же не заработает, VPN/proxy можно вернуть отдельным override позже, не меняя основную серверную конфигурацию.
+Если Gemini на конкретном сервере не работает по региону или free-tier ограничению, planner автоматически уйдёт на secondary provider через `AI_FALLBACK_*`.
 
 ## Локальная разработка
 

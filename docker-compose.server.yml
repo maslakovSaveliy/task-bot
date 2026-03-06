@@ -3,10 +3,11 @@ services:
     environment:
       GEMINI_API_KEY: ${GEMINI_API_KEY}
       GEMINI_BASE_URL: ${GEMINI_BASE_URL:-https://generativelanguage.googleapis.com/v1beta/openai/}
-      AI_API_KEY: ${AI_API_KEY:-}
-      AI_BASE_URL: ${AI_BASE_URL:-}
       PRIMARY_CHAT_MODEL: ${PRIMARY_CHAT_MODEL:-gemini-2.5-flash}
       FALLBACK_CHAT_MODEL: ${FALLBACK_CHAT_MODEL:-}
+      AI_FALLBACK_API_KEY: ${AI_FALLBACK_API_KEY:-openai}
+      AI_FALLBACK_BASE_URL: ${AI_FALLBACK_BASE_URL:-https://api.onlysq.ru/ai/openai/}
+      AI_FALLBACK_CHAT_MODEL: ${AI_FALLBACK_CHAT_MODEL:-llama3.1-8b}
       AI_AGENT_MODE: ${AI_AGENT_MODE:-true}
       STT_API_KEY: ${STT_API_KEY}
       STT_BASE_URL: ${STT_BASE_URL}
