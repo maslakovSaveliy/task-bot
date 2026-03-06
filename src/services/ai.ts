@@ -4,6 +4,7 @@ import {
 	config,
 	DEFAULT_PROJECT_NAME,
 	FALLBACK_CHAT_MODEL,
+	IS_GEMINI_COMPAT,
 	PRIMARY_CHAT_MODEL,
 } from '../config.js';
 import type {
@@ -582,15 +583,23 @@ async function callPlanner(
 	systemPrompt: string,
 	text: string,
 ): Promise<{ raw: string; parsed: PlannerResultRaw }> {
-	const completion = await ai.chat.completions.create({
+	const request: OpenAI.Chat.ChatCompletionCreateParamsNonStreaming = {
 		model,
+		stream: false,
 		messages: [
 			{ role: 'system', content: systemPrompt },
 			{ role: 'user', content: text },
 		],
-		temperature: 0.1,
-		max_tokens: 4096,
-	});
+	};
+
+	// Gemini's OpenAI-compatible endpoint is stricter than OpenAI itself.
+	// A minimal payload avoids spurious 400s on otherwise valid requests.
+	if (!IS_GEMINI_COMPAT) {
+		request.temperature = 0.1;
+		request.max_tokens = 4096;
+	}
+
+	const completion = await ai.chat.completions.create(request);
 
 	const content = completion.choices[0]?.message?.content;
 	if (!content) {
@@ -601,6 +610,18 @@ async function callPlanner(
 	const parsed = normalizeParsedResult(text, extractJson<PlannerResultRaw>(content));
 	console.log(`[AI planner parsed][${model}]`, JSON.stringify(parsed));
 	return { raw: content, parsed };
+}
+
+function getErrorStatus(error: unknown): number | null {
+	if (!error || typeof error !== 'object') {
+		return null;
+	}
+
+	if ('status' in error && typeof error.status === 'number') {
+		return error.status;
+	}
+
+	return null;
 }
 
 function clarificationMessage(result: PlannerResultRaw): string {
@@ -672,7 +693,14 @@ export async function parseUserMessage(
 		chosen = await callPlanner(PRIMARY_CHAT_MODEL, systemPrompt, text);
 		fallbackReason = AI_AGENT_MODE ? findFallbackReason(chosen.parsed, currentTasks) : null;
 	} catch (error) {
-		if (!AI_AGENT_MODE || !FALLBACK_CHAT_MODEL || FALLBACK_CHAT_MODEL === PRIMARY_CHAT_MODEL) {
+		const status = getErrorStatus(error);
+		const shouldRetryOnFallback =
+			AI_AGENT_MODE &&
+			!!FALLBACK_CHAT_MODEL &&
+			FALLBACK_CHAT_MODEL !== PRIMARY_CHAT_MODEL &&
+			(status === null || status >= 500);
+
+		if (!shouldRetryOnFallback) {
 			throw error;
 		}
 		fallbackReason = 'primary_planner_failed';

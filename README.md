@@ -112,7 +112,7 @@ docker compose --env-file .env.server -f docker-compose.yml -f docker-compose.se
 Ключевые server env:
 - `GEMINI_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai/`
 - `PRIMARY_CHAT_MODEL=gemini-2.5-flash`
-- `FALLBACK_CHAT_MODEL=gemini-2.5-pro`
+- `FALLBACK_CHAT_MODEL=` по умолчанию выключен, чтобы не сжигать free-tier лимит второй моделью
 - `AI_AGENT_MODE=true`
 
 Если на конкретном сервере прямой доступ к Gemini всё же не заработает, VPN/proxy можно вернуть отдельным override позже, не меняя основную серверную конфигурацию.

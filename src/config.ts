@@ -27,5 +27,6 @@ export const PRIMARY_STT_MODEL =
 export const FALLBACK_STT_MODEL = process.env.FALLBACK_STT_MODEL || '';
 export const AI_CHAT_MODEL = PRIMARY_CHAT_MODEL;
 export const AI_STT_MODEL = PRIMARY_STT_MODEL;
+export const IS_GEMINI_COMPAT = config.aiBaseUrl.includes('generativelanguage.googleapis.com');
 export const REMINDER_CHECK_CRON = '* * * * *';
 export const DEFAULT_PROJECT_NAME = 'General';
