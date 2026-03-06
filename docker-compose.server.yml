@@ -1,30 +1,5 @@
 services:
-  gluetun:
-    image: qmcgaw/gluetun:latest
-    restart: unless-stopped
-    cap_add:
-      - NET_ADMIN
-    devices:
-      - /dev/net/tun:/dev/net/tun
-    environment:
-      VPN_SERVICE_PROVIDER: ${VPN_SERVICE_PROVIDER}
-      VPN_TYPE: ${VPN_TYPE:-wireguard}
-      WIREGUARD_PRIVATE_KEY: ${WIREGUARD_PRIVATE_KEY:-}
-      WIREGUARD_ADDRESSES: ${WIREGUARD_ADDRESSES:-}
-      WIREGUARD_PUBLIC_KEY: ${WIREGUARD_PUBLIC_KEY:-}
-      WIREGUARD_ENDPOINT_IP: ${WIREGUARD_ENDPOINT_IP:-}
-      WIREGUARD_ENDPOINT_PORT: ${WIREGUARD_ENDPOINT_PORT:-}
-      OPENVPN_USER: ${OPENVPN_USER:-}
-      OPENVPN_PASSWORD: ${OPENVPN_PASSWORD:-}
-      SERVER_COUNTRIES: ${VPN_SERVER_COUNTRIES:-}
-      SERVER_CITIES: ${VPN_SERVER_CITIES:-}
-      HTTPPROXY: "on"
-      HTTPPROXY_LISTENING_ADDRESS: ":8888"
-
   bot:
-    depends_on:
-      gluetun:
-        condition: service_started
     environment:
       GEMINI_API_KEY: ${GEMINI_API_KEY}
       GEMINI_BASE_URL: ${GEMINI_BASE_URL:-https://generativelanguage.googleapis.com/v1beta/openai/}
@@ -37,7 +12,3 @@ services:
       STT_BASE_URL: ${STT_BASE_URL}
       PRIMARY_STT_MODEL: ${PRIMARY_STT_MODEL:-whisper-large-v3-turbo}
       FALLBACK_STT_MODEL: ${FALLBACK_STT_MODEL:-}
-      NODE_OPTIONS: ${NODE_OPTIONS:---use-env-proxy}
-      HTTPS_PROXY: ${HTTPS_PROXY:-http://gluetun:8888}
-      HTTP_PROXY: ${HTTP_PROXY:-http://gluetun:8888}
-      NO_PROXY: ${NO_PROXY:-db,localhost,127.0.0.1,api.telegram.org,api.onlysq.ru}

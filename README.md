@@ -78,15 +78,14 @@ docker compose down
 
 Данные PostgreSQL сохраняются в Docker volume `pgdata`.
 
-## Серверный V1 с Gemini и selective VPN
+## Серверный V1 с Gemini
 
 Для серверного запуска есть отдельный override-файл [docker-compose.server.yml](/Users/savelijmaslakov/DEV/task-manager/docker-compose.server.yml).
 
 Схема:
 - `bot` работает как обычно
-- `gluetun` поднимает VPN внутри отдельного контейнера
-- только Gemini-запросы бота идут через proxy `gluetun`
-- Telegram API, Postgres и текущий STT-провайдер обходят proxy через `NO_PROXY`
+- planner идёт напрямую в Gemini API
+- STT остаётся на текущем провайдере
 
 Подготовка:
 
@@ -97,7 +96,6 @@ cp .env.server.example .env.server
 Заполни:
 - `GEMINI_API_KEY`
 - `STT_API_KEY` и `STT_BASE_URL`
-- параметры VPN для `gluetun`
 
 Запуск на сервере:
 
@@ -109,18 +107,15 @@ docker compose --env-file .env.server -f docker-compose.yml -f docker-compose.se
 
 ```bash
 docker compose --env-file .env.server -f docker-compose.yml -f docker-compose.server.yml logs -f bot
-docker compose --env-file .env.server -f docker-compose.yml -f docker-compose.server.yml logs -f gluetun
 ```
 
 Ключевые server env:
 - `GEMINI_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai/`
 - `PRIMARY_CHAT_MODEL=gemini-2.5-flash`
 - `FALLBACK_CHAT_MODEL=gemini-2.5-pro`
-- `NODE_OPTIONS=--use-env-proxy`
-- `HTTPS_PROXY=http://gluetun:8888`
-- `NO_PROXY=db,localhost,127.0.0.1,api.telegram.org,api.onlysq.ru`
+- `AI_AGENT_MODE=true`
 
-Если STT-провайдер другой, добавь его hostname в `NO_PROXY`, чтобы голосовые запросы шли напрямую, а не через VPN.
+Если на конкретном сервере прямой доступ к Gemini всё же не заработает, VPN/proxy можно вернуть отдельным override позже, не меняя основную серверную конфигурацию.
 
 ## Локальная разработка
 
