@@ -77,7 +77,7 @@ export async function executeParsedMessage(
 	const { result, telegramId, chatId, userId, timezone } = params;
 
 	if (result.intent === 'clarify') {
-		return { text: `❓ ${result.message}`, shouldRefresh: false };
+		return { text: `⚠️ ${result.message}`, shouldRefresh: false };
 	}
 
 	const sections: string[] = [];

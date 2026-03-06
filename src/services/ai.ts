@@ -46,7 +46,6 @@ const secondaryPlannerProvider: PlannerProvider | null =
 		: null;
 
 const LOW_CONFIDENCE_THRESHOLD = 0.72;
-const CLARIFY_CONFIDENCE_THRESHOLD = 0.45;
 const FEW_SHOT_LIMIT = 3;
 
 const PLANNER_SYSTEM_PROMPT = `You are the planning layer for a Telegram task bot.
@@ -74,11 +73,11 @@ Rules:
 - "new_tasks" means only create tasks/reminders/recurring tasks.
 - "actions" means only actions on existing tasks.
 - "mixed" means the message contains both new tasks and actions on existing tasks.
-- "clarify" means the instruction is ambiguous or unsafe to execute.
+- "clarify" is allowed internally, but prefer a best-effort executable plan whenever the command is reasonably inferable.
 - If the user creates a task and immediately asks to remind about the same new task, keep it as a single new task with deadline/reminder. Do not split that into mixed.
-- If a destructive action is ambiguous, use intent "clarify".
+- Never ask the user a clarifying question. Prefer the most likely action from the text.
 - Always include confidence from 0 to 1.
-- Always set needsClarification true when intent is "clarify".
+- Avoid needsClarification unless absolutely nothing executable can be derived.
 - Return ONLY JSON.
 
 Task object schema:
@@ -118,7 +117,7 @@ Critical interpretation rules:
 - "напомни ... про задачу N" or "про задачи N и M" is an action "set_reminder".
 - Explicit dates like "6 марта 2026", "06.03.2026", "6 марта в 18:00" must preserve exact day/month/year from the text.
 - "сегодня" must map to {"type":"today"}.
-- If the request is ambiguous, ask a short clarification question in Russian.
+- Never ask a clarification question. If nothing executable can be derived, return empty actions/tasks.
 `;
 
 const UNIT_MS: Record<TimeUnit, number> = {
@@ -351,6 +350,35 @@ function buildReminderActionsFromText(text: string): TaskActionRaw[] | null {
 	}));
 }
 
+function extractTaskNumbers(text: string): number[] {
+	return Array.from(text.matchAll(/\b\d+\b/g), (match) => Number(match[0])).filter((value) =>
+		Number.isFinite(value),
+	);
+}
+
+function buildDirectActionsFromText(text: string): TaskActionRaw[] | null {
+	const taskNumbers = extractTaskNumbers(text);
+	if (taskNumbers.length === 0) return null;
+
+	if (/\b(удали|удалить|убери|убрать|снеси)\b/i.test(text)) {
+		return taskNumbers.map((taskNumber) => ({
+			action: 'delete',
+			taskNumber,
+			taskName: null,
+		}));
+	}
+
+	if (/\b(готово|готова|сделано|выполни|выполнено|закрой|заверши)\b/i.test(text)) {
+		return taskNumbers.map((taskNumber) => ({
+			action: 'complete',
+			taskNumber,
+			taskName: null,
+		}));
+	}
+
+	return null;
+}
+
 function clampConfidence(value: number | undefined): number {
 	if (typeof value !== 'number' || Number.isNaN(value)) return 0.5;
 	return Math.max(0, Math.min(1, value));
@@ -385,6 +413,19 @@ function sanitizePlannerResult(parsed: PlannerResultRaw): PlannerResultRaw {
 
 function normalizeParsedResult(text: string, parsed: PlannerResultRaw): PlannerResultRaw {
 	const normalized = sanitizePlannerResult(parsed);
+	const directActions = buildDirectActionsFromText(text);
+	if (directActions) {
+		return sanitizePlannerResult({
+			...normalized,
+			intent: 'actions',
+			actions: directActions,
+			tasks: [],
+			confidence: Math.max(normalized.confidence ?? 0.5, 0.95),
+			needsClarification: false,
+			clarificationQuestion: null,
+		});
+	}
+
 	const reminderActions = buildReminderActionsFromText(text);
 	if (reminderActions) {
 		return sanitizePlannerResult({
@@ -650,10 +691,7 @@ function getErrorStatus(error: unknown): number | null {
 }
 
 function clarificationMessage(result: PlannerResultRaw): string {
-	return (
-		result.clarificationQuestion ??
-		'Уточни, что именно нужно сделать: изменить существующую задачу, создать новую или выполнить оба действия.'
-	);
+	return result.clarificationQuestion ?? 'Не удалось распознать команду.';
 }
 
 function finalizePlannerResult(
@@ -661,16 +699,21 @@ function finalizePlannerResult(
 	now: Date,
 	timezone: string,
 ): UserMessageResult {
-	if (
-		result.intent === 'clarify' ||
-		result.needsClarification ||
-		(result.confidence ?? 0) < CLARIFY_CONFIDENCE_THRESHOLD
-	) {
-		return { intent: 'clarify', message: clarificationMessage(result) };
-	}
-
 	const tasks = (result.tasks ?? []).map((raw) => rawToFinal(raw, now, timezone));
 	const actions = result.actions ?? [];
+
+	if (result.intent === 'clarify' || result.needsClarification) {
+		if (actions.length > 0 && tasks.length > 0) {
+			return { intent: 'mixed', tasks, actions };
+		}
+		if (actions.length > 0) {
+			return { intent: 'actions', actions };
+		}
+		if (tasks.length > 0) {
+			return { intent: 'new_tasks', tasks };
+		}
+		return { intent: 'clarify', message: clarificationMessage(result) };
+	}
 
 	if (result.intent === 'actions') {
 		return { intent: 'actions', actions };
