@@ -2,9 +2,9 @@ import { Composer } from 'grammy';
 import { parseUserMessage } from '../../services/ai.js';
 import { isSTTConfigured, transcribeAudio } from '../../services/stt.js';
 import type { BotContext } from '../../types/index.js';
-import { resolveAndExecuteActions } from '../tasks/actions.js';
+import { executeParsedMessage } from '../tasks/message-flow.js';
 import { refreshPinnedMessage } from '../tasks/pinned.js';
-import { addTaskFromParsed, ensureUser, getActiveTasks } from '../tasks/service.js';
+import { ensureUser, getActiveTasks } from '../tasks/service.js';
 
 export const voiceModule = new Composer<BotContext>();
 
@@ -26,57 +26,44 @@ voiceModule.on('message:voice', async (ctx) => {
 		const response = await fetch(fileUrl);
 		const audioBuffer = await response.arrayBuffer();
 
-		const transcribedText = await transcribeAudio(audioBuffer, 'voice.ogg');
+		const transcription = await transcribeAudio(audioBuffer, 'voice.ogg');
+		console.log(
+			'[Voice transcription]',
+			JSON.stringify({
+				model: transcription.model,
+				fallbackReason: transcription.fallbackReason,
+				rawText: transcription.rawText,
+				normalizedText: transcription.normalizedText,
+			}),
+		);
 
 		await ctx.api.editMessageText(
 			Number(chatId),
 			processingMsg.message_id,
-			`🎤 Распознано: "${transcribedText}"\n⏳ Обрабатываю...`,
+			`🎤 Распознано: "${transcription.text}"\n⏳ Обрабатываю...`,
 		);
 
 		const user = await ensureUser(telegramId, chatId);
 		const currentTasks = await getActiveTasks(user.id);
-		const result = await parseUserMessage(transcribedText, user.timezone, currentTasks);
-
-		if (result.intent === 'actions') {
-			const actionResults = await resolveAndExecuteActions(result.actions, user.id, user.timezone);
-			const lines = actionResults.map((r) => (r.success ? r.message : `⚠️ ${r.message}`));
-			await ctx.api.editMessageText(
-				Number(chatId),
-				processingMsg.message_id,
-				`${lines.join('\n')}\n\n🎤 _"${transcribedText}"_`,
-				{ parse_mode: 'Markdown' },
-			);
-			await refreshPinnedMessage(ctx, telegramId, chatId, { resend: true });
-			return;
-		}
-
-		const resultLines: string[] = [];
-		for (const parsed of result.tasks) {
-			await addTaskFromParsed(
-				telegramId,
-				chatId,
-				parsed.task,
-				parsed.project,
-				parsed.dueDate,
-				parsed.remindAt,
-			);
-			resultLines.push(`📁 ${parsed.project}\n📝 ${parsed.task}`);
-		}
-
-		const header =
-			result.tasks.length === 1
-				? '✅ Задача добавлена!'
-				: `✅ Добавлено задач: ${result.tasks.length}`;
+		const result = await parseUserMessage(transcription.text, user.timezone, currentTasks);
+		const execution = await executeParsedMessage({
+			result,
+			telegramId,
+			chatId,
+			userId: user.id,
+			timezone: user.timezone,
+		});
 
 		await ctx.api.editMessageText(
 			Number(chatId),
 			processingMsg.message_id,
-			`${header}\n\n${resultLines.join('\n\n')}\n\n🎤 _"${transcribedText}"_`,
+			`${execution.text}\n\n🎤 _"${transcription.text}"_`,
 			{ parse_mode: 'Markdown' },
 		);
 
-		await refreshPinnedMessage(ctx, telegramId, chatId, { resend: true });
+		if (execution.shouldRefresh) {
+			await refreshPinnedMessage(ctx, telegramId, chatId, { resend: true });
+		}
 	} catch (error) {
 		console.error('Error processing voice message:', error);
 		await ctx.api.editMessageText(

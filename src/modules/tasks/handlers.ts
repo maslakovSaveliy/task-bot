@@ -2,11 +2,10 @@ import { find as findTimezone } from 'geo-tz';
 import { Composer, InlineKeyboard } from 'grammy';
 import { parseUserMessage } from '../../services/ai.js';
 import type { BotContext } from '../../types/index.js';
-import { resolveAndExecuteActions } from './actions.js';
 import { parseCallbackData } from './keyboard.js';
+import { executeParsedMessage } from './message-flow.js';
 import { refreshPinnedMessage } from './pinned.js';
 import {
-	addTaskFromParsed,
 	completeTask,
 	deleteTask,
 	ensureUser,
@@ -270,80 +269,18 @@ tasksModule.on('message:text', async (ctx) => {
 		const user = await ensureUser(telegramId, chatId);
 		const currentTasks = await getActiveTasks(user.id);
 		const result = await parseUserMessage(text, user.timezone, currentTasks);
+		const execution = await executeParsedMessage({
+			result,
+			telegramId,
+			chatId,
+			userId: user.id,
+			timezone: user.timezone,
+		});
 
-		if (result.intent === 'actions') {
-			const actionResults = await resolveAndExecuteActions(result.actions, user.id, user.timezone);
-			const lines = actionResults.map((r) => (r.success ? r.message : `⚠️ ${r.message}`));
-			await ctx.api.editMessageText(Number(chatId), processingMsg.message_id, lines.join('\n'));
+		await ctx.api.editMessageText(Number(chatId), processingMsg.message_id, execution.text);
+		if (execution.shouldRefresh) {
 			await refreshPinnedMessage(ctx, telegramId, chatId, { resend: true });
-			return;
 		}
-
-		const resultLines: string[] = [];
-		let recurringCount = 0;
-		let regularCount = 0;
-
-		for (const parsed of result.tasks) {
-			if (parsed.recurrence) {
-				const { createRecurringFromParsed } = await import('../recurring/service.js');
-				const recurring = await createRecurringFromParsed(user.id, user.timezone, parsed);
-
-				const periodLabels: Record<string, string> = {
-					weekly: 'Еженедельно',
-					monthly: 'Ежемесячно',
-					yearly: 'Ежегодно',
-				};
-				const periodLabel = periodLabels[parsed.recurrence] ?? parsed.recurrence;
-				const timeStr = `${String(recurring.hour).padStart(2, '0')}:${String(recurring.minute).padStart(2, '0')}`;
-				resultLines.push(`🔁 ${parsed.task} (${periodLabel}, ${timeStr})`);
-				recurringCount++;
-			} else {
-				await addTaskFromParsed(
-					telegramId,
-					chatId,
-					parsed.task,
-					parsed.project,
-					parsed.dueDate,
-					parsed.remindAt,
-				);
-
-				let taskLine = `📁 ${parsed.project}\n📝 ${parsed.task}`;
-				const dateFmtOpts: Intl.DateTimeFormatOptions = {
-					timeZone: user.timezone,
-					day: '2-digit',
-					month: '2-digit',
-					year: 'numeric',
-					hour: '2-digit',
-					minute: '2-digit',
-				};
-				if (parsed.dueDate) {
-					const dateStr = new Date(parsed.dueDate).toLocaleString('ru-RU', dateFmtOpts);
-					taskLine += `\n📅 Срок: ${dateStr}`;
-				}
-				if (parsed.remindAt) {
-					const remindStr = new Date(parsed.remindAt).toLocaleString('ru-RU', dateFmtOpts);
-					taskLine += `\n🔔 Напомню заранее: ${remindStr}`;
-				}
-				resultLines.push(taskLine);
-				regularCount++;
-			}
-		}
-
-		const totalCount = regularCount + recurringCount;
-		const header =
-			totalCount === 1
-				? regularCount === 1
-					? '✅ Задача добавлена!'
-					: '✅ Напоминание создано!'
-				: `✅ Добавлено задач: ${totalCount}`;
-
-		await ctx.api.editMessageText(
-			Number(chatId),
-			processingMsg.message_id,
-			`${header}\n\n${resultLines.join('\n\n')}`,
-		);
-
-		await refreshPinnedMessage(ctx, telegramId, chatId, { resend: true });
 	} catch (error) {
 		console.error('Error processing text task:', error);
 		await ctx.api.editMessageText(

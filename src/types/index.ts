@@ -88,3 +88,14 @@ export interface ActionResult {
 	success: boolean;
 	message: string;
 }
+
+export type PlannerIntent = 'new_tasks' | 'actions' | 'mixed' | 'clarify';
+
+export interface PlannerResultRaw {
+	intent: PlannerIntent;
+	tasks?: ParsedTaskRaw[];
+	actions?: TaskActionRaw[];
+	confidence?: number;
+	needsClarification?: boolean;
+	clarificationQuestion?: string | null;
+}

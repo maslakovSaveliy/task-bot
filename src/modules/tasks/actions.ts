@@ -75,25 +75,44 @@ function scoreFuzzyMatch(needle: string, title: string): number {
 	return totalScore / needleWords.length;
 }
 
-function findByName(name: string, tasks: TaskWithProject[]): TaskWithProject | undefined {
-	const needle = name.toLowerCase();
-	const exact = tasks.find((t) => t.title.toLowerCase() === needle);
-	if (exact) return exact;
+function dedupeTasks(tasks: TaskWithProject[]): TaskWithProject[] {
+	return Array.from(new Map(tasks.map((task) => [task.id, task])).values());
+}
 
-	const byIncludes = tasks.find((t) => t.title.toLowerCase().includes(needle));
-	if (byIncludes) return byIncludes;
+function findByName(
+	name: string,
+	tasks: TaskWithProject[],
+): TaskWithProject | 'ambiguous' | undefined {
+	const needle = name.toLowerCase();
+	const exactMatches = tasks.filter((task) => task.title.toLowerCase() === needle);
+	if (exactMatches.length > 1) return 'ambiguous';
+	if (exactMatches[0]) return exactMatches[0];
+
+	const includesMatches = dedupeTasks(
+		tasks.filter((task) => {
+			const title = task.title.toLowerCase();
+			return title.includes(needle) || needle.includes(title);
+		}),
+	);
+	if (includesMatches.length > 1) return 'ambiguous';
+	if (includesMatches[0]) return includesMatches[0];
 
 	let bestTask: TaskWithProject | undefined;
 	let bestScore = 0;
+	let sameScoreCount = 0;
 	for (const task of tasks) {
 		const score = scoreFuzzyMatch(name, task.title);
 		if (score > bestScore) {
 			bestScore = score;
 			bestTask = task;
+			sameScoreCount = 1;
+		} else if (score === bestScore && score > 0) {
+			sameScoreCount++;
 		}
 	}
 
 	if (bestTask && bestScore >= FUZZY_THRESHOLD) {
+		if (sameScoreCount > 1) return 'ambiguous';
 		console.log(`[Fuzzy match] "${name}" → "${bestTask.title}" (score=${bestScore.toFixed(2)})`);
 		return bestTask;
 	}
@@ -101,14 +120,22 @@ function findByName(name: string, tasks: TaskWithProject[]): TaskWithProject | u
 	return undefined;
 }
 
-function resolveTask(action: TaskActionRaw, tasks: TaskWithProject[]): TaskWithProject | undefined {
+function resolveTask(
+	action: TaskActionRaw,
+	tasks: TaskWithProject[],
+): { task?: TaskWithProject; error?: string } {
 	if (action.taskName) {
 		const byName = findByName(action.taskName, tasks);
+		if (byName === 'ambiguous') {
+			return {
+				error: `Найдено несколько задач по названию "${action.taskName}". Укажи номер задачи.`,
+			};
+		}
 		if (byName) {
 			console.log(
 				`[Action resolve] by name "${action.taskName}" → "${byName.title}" (id=${byName.id})`,
 			);
-			return byName;
+			return { task: byName };
 		}
 	}
 
@@ -119,11 +146,11 @@ function resolveTask(action: TaskActionRaw, tasks: TaskWithProject[]): TaskWithP
 				`[Action resolve] by number #${action.taskNumber} → "${byNumber.title}" (id=${byNumber.id})`,
 			);
 		}
-		return byNumber;
+		return { task: byNumber };
 	}
 
 	console.log(`[Action resolve] NOT FOUND: name="${action.taskName}", number=${action.taskNumber}`);
-	return undefined;
+	return {};
 }
 
 function formatDateTime(date: Date, timezone: string): string {
@@ -151,7 +178,11 @@ export async function resolveAndExecuteActions(
 	const results: ActionResult[] = [];
 
 	for (const action of actions) {
-		const task = resolveTask(action, tasks);
+		const { task, error } = resolveTask(action, tasks);
+		if (error) {
+			results.push({ success: false, message: error });
+			continue;
+		}
 		if (!task) {
 			const ref = action.taskNumber ? `#${action.taskNumber}` : `"${action.taskName}"`;
 			results.push({ success: false, message: `Задача ${ref} не найдена` });

@@ -1,37 +1,62 @@
 import OpenAI from 'openai';
-import { AI_CHAT_MODEL, config, DEFAULT_PROJECT_NAME } from '../config.js';
+import {
+	AI_AGENT_MODE,
+	config,
+	DEFAULT_PROJECT_NAME,
+	FALLBACK_CHAT_MODEL,
+	PRIMARY_CHAT_MODEL,
+} from '../config.js';
 import type {
-	AIParseResult,
 	DeadlineExpression,
 	ParsedTask,
 	ParsedTaskRaw,
+	PlannerResultRaw,
 	ReminderExpression,
 	TaskActionRaw,
 	TaskWithProject,
 	TimeUnit,
 } from '../types/index.js';
+import { PLANNER_EXAMPLES } from './ai-examples.js';
 
 const ai = new OpenAI({ apiKey: config.aiApiKey, baseURL: config.aiBaseUrl });
 
-// --- Prompt ---
+const LOW_CONFIDENCE_THRESHOLD = 0.72;
+const CLARIFY_CONFIDENCE_THRESHOLD = 0.45;
+const FEW_SHOT_LIMIT = 3;
 
-const SYSTEM_PROMPT = `You are a Telegram task bot assistant. Classify the user message and return JSON.
+const PLANNER_SYSTEM_PROMPT = `You are the planning layer for a Telegram task bot.
+You do not execute anything. You only produce a strict JSON plan for the executor.
+
 Current weekday: {weekday}
 Current local date: {localDate}
 
 {taskContext}
 
-STEP 1: Determine intent.
-- If the message describes NEW tasks to create → intent = "new_tasks"
-- If the message describes ACTIONS on existing tasks (delete, complete, rename, move, change deadline) → intent = "actions"
+Similar successful patterns:
+{fewShotExamples}
 
-STEP 2: Return the appropriate JSON.
+Return exactly one JSON object with this shape:
+{
+  "intent": "new_tasks|actions|mixed|clarify",
+  "tasks": [...],
+  "actions": [...],
+  "confidence": 0.0,
+  "needsClarification": false,
+  "clarificationQuestion": null
+}
 
-=== IF intent = "new_tasks" ===
+Rules:
+- "new_tasks" means only create tasks/reminders/recurring tasks.
+- "actions" means only actions on existing tasks.
+- "mixed" means the message contains both new tasks and actions on existing tasks.
+- "clarify" means the instruction is ambiguous or unsafe to execute.
+- If the user creates a task and immediately asks to remind about the same new task, keep it as a single new task with deadline/reminder. Do not split that into mixed.
+- If a destructive action is ambiguous, use intent "clarify".
+- Always include confidence from 0 to 1.
+- Always set needsClarification true when intent is "clarify".
+- Return ONLY JSON.
 
-Return: {"intent":"new_tasks","tasks":[...]}
-
-Each task object:
+Task object schema:
 {
   "task": "clean task title",
   "project": "project name or ${DEFAULT_PROJECT_NAME}",
@@ -40,118 +65,45 @@ Each task object:
   "recurrence": <RecurrenceExpression or null>
 }
 
-DEADLINE types (do NOT calculate dates, just classify):
-- Relative: {"type":"relative","amount":<N>,"unit":"minute|hour|day|week"}
-- Date: {"type":"date","day":<1-31>,"month":<1-12>,"year":<YYYY or null>,"time":"HH:MM" or null}
-- Weekday: {"type":"weekday","weekday":<0-6 Sun-Sat>,"time":"HH:MM" or null}
+Action object schema:
+{
+  "action": "delete|complete|rename|move_project|change_deadline|set_reminder",
+  "taskNumber": <number or null>,
+  "taskName": "partial task name or null",
+  "newTitle": "new title or omitted",
+  "newProject": "project name or omitted",
+  "newDeadline": <DeadlineExpression or null>,
+  "newReminderAt": <DeadlineExpression or null>,
+  "newReminderOffset": <ReminderExpression or null>
+}
+
+DeadlineExpression:
+- Relative: {"type":"relative","amount":N,"unit":"minute|hour|day|week"}
+- Date: {"type":"date","day":1-31,"month":1-12,"year":YYYY or null,"time":"HH:MM" or null}
+- Weekday: {"type":"weekday","weekday":0-6,"time":"HH:MM" or null}
 - Today: {"type":"today","time":"HH:MM" or null}
 - Tomorrow: {"type":"tomorrow","time":"HH:MM" or null}
 - Day after: {"type":"day_after_tomorrow","time":"HH:MM" or null}
-- null if no deadline
 
-REMINDER (ONLY if user says "напомни за ...", "напомни заранее"):
-- {"amount":<N>,"unit":"minute|hour|day"} or null
+ReminderExpression:
+- {"amount":N,"unit":"minute|hour|day|week"}
 
-RECURRENCE ("каждый", "раз в", "еженедельно", "напомни мне каждый месяц N числа"):
-- {"period":"weekly|monthly|yearly","dayOfWeek":<0-6 or null>,"dayOfMonth":<1-31 or null>,"time":"HH:MM" or null}
-- "каждый месяц 5 числа напоминай мне X" → recurrence monthly, dayOfMonth:5, task:X
-- "раз в месяц 1 числа X" → recurrence monthly, dayOfMonth:1, task:X
-- "каждую пятницу в 10:00 X" → recurrence weekly, dayOfWeek:5, time:"10:00", task:X
-- If recurring, deadline and reminder must be null.
+Critical interpretation rules:
+- "напомни через X <что-то>" is usually a new task with relative deadline, not an action on existing tasks.
+- "напомни ... про задачу N" or "про задачи N и M" is an action "set_reminder".
+- Explicit dates like "6 марта 2026", "06.03.2026", "6 марта в 18:00" must preserve exact day/month/year from the text.
+- "сегодня" must map to {"type":"today"}.
+- If the request is ambiguous, ask a short clarification question in Russian.
+`;
 
-=== IF intent = "actions" ===
+const UNIT_MS: Record<TimeUnit, number> = {
+	minute: 60_000,
+	hour: 3_600_000,
+	day: 86_400_000,
+	week: 604_800_000,
+};
 
-Return: {"intent":"actions","actions":[...]}
-
-Each action object:
-{
-  "action": "delete|complete|rename|move_project|change_deadline|set_reminder",
-  "taskNumber": <number from list or null>,
-  "taskName": "partial task name or null",
-  "newTitle": "new title (for rename only)",
-  "newProject": "project name (for move_project only)",
-  "newDeadline": <DeadlineExpression or null (for change_deadline only)>,
-  "newReminderAt": <DeadlineExpression or null (for set_reminder absolute time only)>,
-  "newReminderOffset": <ReminderExpression or null (for set_reminder relative "за час/за день")>
-}
-
-Action examples:
-- "удали задачу 3" → {"action":"delete","taskNumber":3,"taskName":null}
-- "удали купить молоко" → {"action":"delete","taskNumber":null,"taskName":"купить молоко"}
-- "задача 1 готова" → {"action":"complete","taskNumber":1,"taskName":null}
-- "переименуй задачу 2 в Позвонить маме" → {"action":"rename","taskNumber":2,"taskName":null,"newTitle":"Позвонить маме"}
-- "перенеси задачу 1 в проект Работа" → {"action":"move_project","taskNumber":1,"taskName":null,"newProject":"Работа"}
-- "перенеси дедлайн задачи 2 на завтра" → {"action":"change_deadline","taskNumber":2,"taskName":null,"newDeadline":{"type":"tomorrow","time":null}}
-- "напомни сегодня в 18:00 про задачу 2" → {"action":"set_reminder","taskNumber":2,"taskName":null,"newReminderAt":{"type":"today","time":"18:00"},"newReminderOffset":null}
-- "напомни за час про задачи 2 и 3" → two set_reminder actions with newReminderOffset {"amount":1,"unit":"hour"}
-- "удали все задачи из General" → multiple delete actions for each task in General
-
-CRITICAL RULES:
-- "напомни через X <что-то>" = new_tasks with deadline relative, NOT an action.
-- "напомни ... про задачу N" or "напомни ... про задачи N и M" = actions with action "set_reminder".
-- "удали", "убери", "выполни", "готово", "переименуй", "перенеси в проект", "измени дедлайн" = actions.
-- "сегодня" must be returned as {"type":"today"} and interpreted relative to Current local date above.
-- Explicit dates like "6 марта 2026", "06.03.2026", "6 марта в 18:00" must preserve the exact day/month/year from the user text. Do not guess or swap day/month.
-- Multiple tasks/actions in one message → return ALL of them. Do NOT skip any.
-- When user sends a list with categories/headings followed by bullet points (•, -, *), EACH bullet point is a SEPARATE task. The heading is the project name. Parse ALL tasks from ALL categories.
-- For move_project: use EXACT project name from the "Current user tasks" list above (e.g. if list shows [ВПН], use "ВПН", NOT "VPN"). Match the existing project name precisely.
-- For new tasks with project names: if user mentions a project that looks like an existing one (same meaning, different script), use the EXISTING project name from the list.
-- Single item → still wrap in array.
-- Return ONLY JSON. No markdown, no backticks, no explanation.
-
-EXAMPLES:
-
-Input: "купить молоко"
-Output: {"intent":"new_tasks","tasks":[{"task":"Купить молоко","project":"${DEFAULT_PROJECT_NAME}","deadline":null,"reminder":null,"recurrence":null}]}
-
-Input: "напомни через 2 минуты снять сковородку"
-Output: {"intent":"new_tasks","tasks":[{"task":"Снять сковородку","project":"${DEFAULT_PROJECT_NAME}","deadline":{"type":"relative","amount":2,"unit":"minute"},"reminder":null,"recurrence":null}]}
-
-Input: "напомни сегодня в 18:00 проверить задачи по боту"
-Output: {"intent":"new_tasks","tasks":[{"task":"Проверить задачи по боту","project":"${DEFAULT_PROJECT_NAME}","deadline":{"type":"today","time":"18:00"},"reminder":null,"recurrence":null}]}
-
-Input: "напомни 6 марта 2026 года в 18:00 проверить задачи по боту"
-Output: {"intent":"new_tasks","tasks":[{"task":"Проверить задачи по боту","project":"${DEFAULT_PROJECT_NAME}","deadline":{"type":"date","day":6,"month":3,"year":2026,"time":"18:00"},"reminder":null,"recurrence":null}]}
-
-Input: "удали задачу 3"
-Output: {"intent":"actions","actions":[{"action":"delete","taskNumber":3,"taskName":null}]}
-
-Input: "задача купить молоко готова"
-Output: {"intent":"actions","actions":[{"action":"complete","taskNumber":null,"taskName":"купить молоко"}]}
-
-Input: "переименуй задачу 1 в Купить кефир"
-Output: {"intent":"actions","actions":[{"action":"rename","taskNumber":1,"taskName":null,"newTitle":"Купить кефир"}]}
-
-Input: "перенеси задачу 2 в проект Личное"
-Output: {"intent":"actions","actions":[{"action":"move_project","taskNumber":2,"taskName":null,"newProject":"Личное"}]}
-
-Input: "перенеси дедлайн задачи 1 на пятницу"
-Output: {"intent":"actions","actions":[{"action":"change_deadline","taskNumber":1,"taskName":null,"newDeadline":{"type":"weekday","weekday":5,"time":null}}]}
-
-Input: "удали задачи 1 и 3"
-Output: {"intent":"actions","actions":[{"action":"delete","taskNumber":1,"taskName":null},{"action":"delete","taskNumber":3,"taskName":null}]}
-
-Input: "напомни сегодня в 18:00 про задачи 2 и 3"
-Output: {"intent":"actions","actions":[{"action":"set_reminder","taskNumber":2,"taskName":null,"newReminderAt":{"type":"today","time":"18:00"},"newReminderOffset":null},{"action":"set_reminder","taskNumber":3,"taskName":null,"newReminderAt":{"type":"today","time":"18:00"},"newReminderOffset":null}]}
-
-Input: "Work\\n- тесты\\n- баг"
-Output: {"intent":"new_tasks","tasks":[{"task":"Тесты","project":"Work","deadline":null,"reminder":null,"recurrence":null},{"task":"Баг","project":"Work","deadline":null,"reminder":null,"recurrence":null}]}
-
-Input: "Круги\\n• задача 1\\n\\nРабота\\n• задача 2\\n- задача 3\\n• задача 4\\n\\nЛичное\\n• задача 5"
-Output: {"intent":"new_tasks","tasks":[{"task":"Задача 1","project":"Круги","deadline":null,"reminder":null,"recurrence":null},{"task":"Задача 2","project":"Работа","deadline":null,"reminder":null,"recurrence":null},{"task":"Задача 3","project":"Работа","deadline":null,"reminder":null,"recurrence":null},{"task":"Задача 4","project":"Работа","deadline":null,"reminder":null,"recurrence":null},{"task":"Задача 5","project":"Личное","deadline":null,"reminder":null,"recurrence":null}]}
-
-Input: "каждый месяц 5 числа напоминай мне скинуть бате 14 тысяч рублей"
-Output: {"intent":"new_tasks","tasks":[{"task":"Скинуть бате 14 тысяч рублей","project":"${DEFAULT_PROJECT_NAME}","deadline":null,"reminder":null,"recurrence":{"period":"monthly","dayOfWeek":null,"dayOfMonth":5,"time":null}}]}
-
-Input: "раз в месяц 1 числа оплата квартиры"
-Output: {"intent":"new_tasks","tasks":[{"task":"Оплата квартиры","project":"${DEFAULT_PROJECT_NAME}","deadline":null,"reminder":null,"recurrence":{"period":"monthly","dayOfWeek":null,"dayOfMonth":1,"time":null}}]}
-
-Input: "каждую пятницу в 10:00 созвон"
-Output: {"intent":"new_tasks","tasks":[{"task":"Созвон","project":"${DEFAULT_PROJECT_NAME}","deadline":null,"reminder":null,"recurrence":{"period":"weekly","dayOfWeek":5,"dayOfMonth":null,"time":"10:00"}}]}`;
-
-// --- JSON extraction ---
-
-function extractJson(raw: string): AIParseResult {
+function extractJson<T>(raw: string): T {
 	const objectStart = raw.indexOf('{');
 	if (objectStart === -1) {
 		throw new Error(`No JSON found in AI response: ${raw.slice(0, 200)}`);
@@ -162,21 +114,12 @@ function extractJson(raw: string): AIParseResult {
 		if (raw[i] === '{') depth++;
 		if (raw[i] === '}') depth--;
 		if (depth === 0) {
-			return JSON.parse(raw.slice(objectStart, i + 1)) as AIParseResult;
+			return JSON.parse(raw.slice(objectStart, i + 1)) as T;
 		}
 	}
 
 	throw new Error(`Unclosed JSON in AI response: ${raw.slice(0, 200)}`);
 }
-
-// --- Time resolution ---
-
-const UNIT_MS: Record<TimeUnit, number> = {
-	minute: 60_000,
-	hour: 3_600_000,
-	day: 86_400_000,
-	week: 604_800_000,
-};
 
 function getLocalParts(date: Date, timezone: string): Record<string, string> {
 	const fmt = new Intl.DateTimeFormat('en-CA', {
@@ -212,6 +155,73 @@ function toTime(
 ): string | null {
 	if (hours === undefined || minutes === undefined) return null;
 	return `${pad2(Number(hours))}:${pad2(Number(minutes))}`;
+}
+
+function normalizeText(text: string): string {
+	return text
+		.toLowerCase()
+		.replace(/[“”«»"']/g, ' ')
+		.replace(/[.,!?;:()[\]{}]/g, ' ')
+		.replace(/\s+/g, ' ')
+		.trim();
+}
+
+function tokenize(text: string): string[] {
+	return normalizeText(text)
+		.split(' ')
+		.filter((word) => word.length > 1);
+}
+
+function similarityScore(left: string, right: string): number {
+	const leftWords = new Set(tokenize(left));
+	const rightWords = new Set(tokenize(right));
+	if (leftWords.size === 0 || rightWords.size === 0) return 0;
+
+	let overlap = 0;
+	for (const word of leftWords) {
+		if (rightWords.has(word)) overlap++;
+	}
+	return overlap / Math.max(leftWords.size, rightWords.size);
+}
+
+function buildFewShotExamples(text: string): string {
+	const selected = [...PLANNER_EXAMPLES]
+		.map((example) => ({ example, score: similarityScore(text, example.input) }))
+		.sort((a, b) => b.score - a.score)
+		.slice(0, FEW_SHOT_LIMIT)
+		.map(({ example }, index) => {
+			return `Example ${index + 1}
+Input: ${example.input}
+Output: ${example.output}`;
+		});
+
+	if (selected.length === 0) return 'No few-shot examples selected.';
+	return selected.join('\n\n');
+}
+
+function buildTaskContext(tasks: TaskWithProject[]): string {
+	if (tasks.length === 0) return 'User has no tasks.';
+
+	const grouped = new Map<string, TaskWithProject[]>();
+	for (const task of tasks) {
+		const name = task.project.name;
+		const arr = grouped.get(name);
+		if (arr) arr.push(task);
+		else grouped.set(name, [task]);
+	}
+
+	const lines: string[] = ['Current user tasks:'];
+	let index = 1;
+	for (const [projectName, projectTasks] of grouped) {
+		for (const task of projectTasks) {
+			const deadline = task.dueDate
+				? ` | deadline: ${task.dueDate.toISOString().slice(0, 16)}`
+				: '';
+			lines.push(`${index}. ${task.title} [${projectName}]${deadline}`);
+			index++;
+		}
+	}
+	return lines.join('\n');
 }
 
 function resolveRussianMonth(rawMonth: string): number | null {
@@ -316,36 +326,114 @@ function buildReminderActionsFromText(text: string): TaskActionRaw[] | null {
 	}));
 }
 
-function normalizeParsedResult(text: string, parsed: AIParseResult): AIParseResult {
+function clampConfidence(value: number | undefined): number {
+	if (typeof value !== 'number' || Number.isNaN(value)) return 0.5;
+	return Math.max(0, Math.min(1, value));
+}
+
+function sanitizePlannerResult(parsed: PlannerResultRaw): PlannerResultRaw {
+	const tasks = Array.isArray(parsed.tasks) ? parsed.tasks : [];
+	const actions = Array.isArray(parsed.actions) ? parsed.actions : [];
+	let intent = parsed.intent;
+
+	if (!intent) {
+		if (tasks.length > 0 && actions.length > 0) intent = 'mixed';
+		else if (actions.length > 0) intent = 'actions';
+		else if (tasks.length > 0) intent = 'new_tasks';
+		else intent = 'clarify';
+	}
+
+	if (intent === 'new_tasks' && actions.length > 0 && tasks.length > 0) intent = 'mixed';
+	if (intent === 'actions' && tasks.length > 0 && actions.length > 0) intent = 'mixed';
+	if (intent === 'mixed' && tasks.length === 0 && actions.length > 0) intent = 'actions';
+	if (intent === 'mixed' && actions.length === 0 && tasks.length > 0) intent = 'new_tasks';
+
+	return {
+		intent,
+		tasks,
+		actions,
+		confidence: clampConfidence(parsed.confidence),
+		needsClarification: Boolean(parsed.needsClarification || intent === 'clarify'),
+		clarificationQuestion: parsed.clarificationQuestion ?? null,
+	};
+}
+
+function normalizeParsedResult(text: string, parsed: PlannerResultRaw): PlannerResultRaw {
+	const normalized = sanitizePlannerResult(parsed);
 	const reminderActions = buildReminderActionsFromText(text);
 	if (reminderActions) {
-		return { intent: 'actions', actions: reminderActions };
+		return sanitizePlannerResult({
+			...normalized,
+			intent: 'actions',
+			actions: reminderActions,
+			tasks: [],
+			confidence: Math.max(normalized.confidence ?? 0.5, 0.9),
+			needsClarification: false,
+			clarificationQuestion: null,
+		});
 	}
 
 	const explicitDeadline = extractExplicitDeadline(text);
-	if (!explicitDeadline) return parsed;
+	if (!explicitDeadline) return normalized;
 
-	if (parsed.intent === 'actions') {
-		return {
-			intent: 'actions',
-			actions: parsed.actions.map((action) => {
-				if (action.action === 'change_deadline') {
-					return { ...action, newDeadline: explicitDeadline };
-				}
-				if (action.action === 'set_reminder' && !action.newReminderOffset) {
-					return { ...action, newReminderAt: explicitDeadline };
-				}
-				return action;
-			}),
-		};
+	const tasks = (normalized.tasks ?? []).map((task) =>
+		task.recurrence ? task : { ...task, deadline: explicitDeadline },
+	);
+	const actions = (normalized.actions ?? []).map((action) => {
+		if (action.action === 'change_deadline') {
+			return { ...action, newDeadline: explicitDeadline };
+		}
+		if (action.action === 'set_reminder' && !action.newReminderOffset) {
+			return { ...action, newReminderAt: explicitDeadline };
+		}
+		return action;
+	});
+
+	return sanitizePlannerResult({ ...normalized, tasks, actions });
+}
+
+function hasConflictingActions(actions: TaskActionRaw[]): boolean {
+	const seen = new Map<string, Set<string>>();
+	for (const action of actions) {
+		const key =
+			action.taskNumber !== null ? `#${action.taskNumber}` : `name:${action.taskName ?? ''}`;
+		const types = seen.get(key) ?? new Set<string>();
+		types.add(action.action);
+		seen.set(key, types);
 	}
 
-	return {
-		intent: 'new_tasks',
-		tasks: parsed.tasks.map((task) =>
-			task.recurrence ? task : { ...task, deadline: explicitDeadline },
-		),
-	};
+	for (const types of seen.values()) {
+		if (types.has('delete') && types.size > 1) return true;
+		if (types.has('complete') && (types.has('rename') || types.has('move_project'))) return true;
+	}
+	return false;
+}
+
+function isActionAmbiguous(action: TaskActionRaw, tasks: TaskWithProject[]): boolean {
+	if (!action.taskName) return false;
+
+	const needle = normalizeText(action.taskName);
+	if (!needle) return false;
+
+	const matches = tasks.filter((task) => {
+		const title = normalizeText(task.title);
+		return title === needle || title.includes(needle) || needle.includes(title);
+	});
+	return matches.length > 1;
+}
+
+function findFallbackReason(
+	result: PlannerResultRaw,
+	currentTasks: TaskWithProject[],
+): string | null {
+	if ((result.confidence ?? 0) < LOW_CONFIDENCE_THRESHOLD) return 'low_confidence';
+	if (result.intent === 'mixed') return 'mixed_intent';
+	if (result.needsClarification) return 'clarification_requested';
+	if (hasConflictingActions(result.actions ?? [])) return 'conflicting_actions';
+	if ((result.actions ?? []).some((action) => isActionAmbiguous(action, currentTasks))) {
+		return 'ambiguous_action_target';
+	}
+	return null;
 }
 
 function normalizeUtcOffset(raw: string): string {
@@ -456,35 +544,6 @@ function resolveReminder(reminder: ReminderExpression, dueDateIso: string): stri
 	return new Date(dueDate.getTime() - ms).toISOString();
 }
 
-// --- Task context for AI ---
-
-function buildTaskContext(tasks: TaskWithProject[]): string {
-	if (tasks.length === 0) return 'User has no tasks.';
-
-	const grouped = new Map<string, TaskWithProject[]>();
-	for (const task of tasks) {
-		const name = task.project.name;
-		const arr = grouped.get(name);
-		if (arr) arr.push(task);
-		else grouped.set(name, [task]);
-	}
-
-	const lines: string[] = ['Current user tasks:'];
-	let index = 1;
-	for (const [projectName, projectTasks] of grouped) {
-		for (const task of projectTasks) {
-			const deadline = task.dueDate
-				? ` | deadline: ${task.dueDate.toISOString().slice(0, 16)}`
-				: '';
-			lines.push(`${index}. ${task.title} [${projectName}]${deadline}`);
-			index++;
-		}
-	}
-	return lines.join('\n');
-}
-
-// --- Convert raw to final ---
-
 function rawToFinal(raw: ParsedTaskRaw, now: Date, timezone: string): ParsedTask {
 	const dueDate = raw.deadline ? resolveDeadline(raw.deadline, now, timezone) : null;
 	const remindAt = raw.reminder && dueDate ? resolveReminder(raw.reminder, dueDate) : null;
@@ -512,11 +571,71 @@ function rawToFinal(raw: ParsedTaskRaw, now: Date, timezone: string): ParsedTask
 	};
 }
 
-// --- Main parse function ---
-
 export type UserMessageResult =
 	| { intent: 'new_tasks'; tasks: ParsedTask[] }
-	| { intent: 'actions'; actions: TaskActionRaw[] };
+	| { intent: 'actions'; actions: TaskActionRaw[] }
+	| { intent: 'mixed'; tasks: ParsedTask[]; actions: TaskActionRaw[] }
+	| { intent: 'clarify'; message: string };
+
+async function callPlanner(
+	model: string,
+	systemPrompt: string,
+	text: string,
+): Promise<{ raw: string; parsed: PlannerResultRaw }> {
+	const completion = await ai.chat.completions.create({
+		model,
+		messages: [
+			{ role: 'system', content: systemPrompt },
+			{ role: 'user', content: text },
+		],
+		temperature: 0.1,
+		max_tokens: 4096,
+	});
+
+	const content = completion.choices[0]?.message?.content;
+	if (!content) {
+		throw new Error(`Empty response from AI model ${model}`);
+	}
+
+	console.log(`[AI planner raw][${model}]`, content);
+	const parsed = normalizeParsedResult(text, extractJson<PlannerResultRaw>(content));
+	console.log(`[AI planner parsed][${model}]`, JSON.stringify(parsed));
+	return { raw: content, parsed };
+}
+
+function clarificationMessage(result: PlannerResultRaw): string {
+	return (
+		result.clarificationQuestion ??
+		'Уточни, что именно нужно сделать: изменить существующую задачу, создать новую или выполнить оба действия.'
+	);
+}
+
+function finalizePlannerResult(
+	result: PlannerResultRaw,
+	now: Date,
+	timezone: string,
+): UserMessageResult {
+	if (
+		result.intent === 'clarify' ||
+		result.needsClarification ||
+		(result.confidence ?? 0) < CLARIFY_CONFIDENCE_THRESHOLD
+	) {
+		return { intent: 'clarify', message: clarificationMessage(result) };
+	}
+
+	const tasks = (result.tasks ?? []).map((raw) => rawToFinal(raw, now, timezone));
+	const actions = result.actions ?? [];
+
+	if (result.intent === 'actions') {
+		return { intent: 'actions', actions };
+	}
+
+	if (result.intent === 'mixed') {
+		return { intent: 'mixed', tasks, actions };
+	}
+
+	return { intent: 'new_tasks', tasks };
+}
 
 export async function parseUserMessage(
 	text: string,
@@ -538,35 +657,59 @@ export async function parseUserMessage(
 	const weekday = weekdays[localDate.getDay()] ?? 'Monday';
 	const localDateString = `${lp(localParts, 'year')}-${lp(localParts, 'month')}-${lp(localParts, 'day')}`;
 	const taskContext = buildTaskContext(currentTasks);
+	const fewShotExamples = buildFewShotExamples(text);
 
-	const systemPrompt = SYSTEM_PROMPT.replace('{weekday}', weekday)
+	const systemPrompt = PLANNER_SYSTEM_PROMPT.replace('{weekday}', weekday)
 		.replace('{localDate}', localDateString)
-		.replace('{taskContext}', taskContext);
+		.replace('{taskContext}', taskContext)
+		.replace('{fewShotExamples}', fewShotExamples);
 
-	const completion = await ai.chat.completions.create({
-		model: AI_CHAT_MODEL,
-		messages: [
-			{ role: 'system', content: systemPrompt },
-			{ role: 'user', content: text },
-		],
-		temperature: 0.1,
-		max_tokens: 4096,
-	});
+	let chosen: { raw: string; parsed: PlannerResultRaw };
+	let finalModel = PRIMARY_CHAT_MODEL;
+	let fallbackReason: string | null = null;
 
-	const content = completion.choices[0]?.message?.content;
-	if (!content) {
-		throw new Error('Empty response from AI');
+	try {
+		chosen = await callPlanner(PRIMARY_CHAT_MODEL, systemPrompt, text);
+		fallbackReason = AI_AGENT_MODE ? findFallbackReason(chosen.parsed, currentTasks) : null;
+	} catch (error) {
+		if (!AI_AGENT_MODE || !FALLBACK_CHAT_MODEL || FALLBACK_CHAT_MODEL === PRIMARY_CHAT_MODEL) {
+			throw error;
+		}
+		fallbackReason = 'primary_planner_failed';
+		console.error('[AI planner primary failed]', error);
+		chosen = await callPlanner(FALLBACK_CHAT_MODEL, systemPrompt, text);
+		finalModel = FALLBACK_CHAT_MODEL;
 	}
 
-	console.log('[AI raw response]', content);
-
-	const parsed = normalizeParsedResult(text, extractJson(content));
-	console.log('[AI parsed]', JSON.stringify(parsed));
-
-	if (parsed.intent === 'actions') {
-		return { intent: 'actions', actions: parsed.actions };
+	if (
+		AI_AGENT_MODE &&
+		fallbackReason &&
+		FALLBACK_CHAT_MODEL &&
+		FALLBACK_CHAT_MODEL !== PRIMARY_CHAT_MODEL
+	) {
+		console.log(
+			`[AI planner fallback] primary=${PRIMARY_CHAT_MODEL} fallback=${FALLBACK_CHAT_MODEL} reason=${fallbackReason}`,
+		);
+		try {
+			chosen = await callPlanner(FALLBACK_CHAT_MODEL, systemPrompt, text);
+			finalModel = FALLBACK_CHAT_MODEL;
+			fallbackReason = null;
+		} catch (error) {
+			console.error('[AI planner fallback failed]', error);
+		}
 	}
 
-	const tasks = parsed.tasks.map((raw) => rawToFinal(raw, now, timezone));
-	return { intent: 'new_tasks', tasks };
+	console.log(
+		'[AI planner final]',
+		JSON.stringify({
+			model: finalModel,
+			intent: chosen.parsed.intent,
+			confidence: chosen.parsed.confidence,
+			needsClarification: chosen.parsed.needsClarification,
+			actions: chosen.parsed.actions?.length ?? 0,
+			tasks: chosen.parsed.tasks?.length ?? 0,
+		}),
+	);
+
+	return finalizePlannerResult(chosen.parsed, now, timezone);
 }
