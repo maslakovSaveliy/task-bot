@@ -127,7 +127,7 @@ const UNIT_MS: Record<TimeUnit, number> = {
 	week: 604_800_000,
 };
 
-function extractJson<T>(raw: string): T {
+function extractJsonSlice(raw: string): string {
 	const objectStart = raw.indexOf('{');
 	if (objectStart === -1) {
 		throw new Error(`No JSON found in AI response: ${raw.slice(0, 200)}`);
@@ -138,11 +138,75 @@ function extractJson<T>(raw: string): T {
 		if (raw[i] === '{') depth++;
 		if (raw[i] === '}') depth--;
 		if (depth === 0) {
-			return JSON.parse(raw.slice(objectStart, i + 1)) as T;
+			return raw.slice(objectStart, i + 1);
 		}
 	}
 
 	throw new Error(`Unclosed JSON in AI response: ${raw.slice(0, 200)}`);
+}
+
+function repairJsonString(raw: string): string {
+	let repaired = '';
+	let inString = false;
+	let isEscaped = false;
+
+	for (const char of raw) {
+		if (inString) {
+			if (isEscaped) {
+				repaired += char;
+				isEscaped = false;
+				continue;
+			}
+
+			if (char === '\\') {
+				repaired += char;
+				isEscaped = true;
+				continue;
+			}
+
+			if (char === '"') {
+				repaired += char;
+				inString = false;
+				continue;
+			}
+
+			if (char === '\n') {
+				repaired += '\\n';
+				continue;
+			}
+
+			if (char === '\r') {
+				repaired += '\\r';
+				continue;
+			}
+
+			if (char === '\t') {
+				repaired += '\\t';
+				continue;
+			}
+
+			repaired += char;
+			continue;
+		}
+
+		if (char === '"') {
+			inString = true;
+		}
+		repaired += char;
+	}
+
+	return repaired;
+}
+
+function extractJson<T>(raw: string): T {
+	const jsonSlice = extractJsonSlice(raw);
+	try {
+		return JSON.parse(jsonSlice) as T;
+	} catch (error) {
+		const repaired = repairJsonString(jsonSlice);
+		console.warn('[AI planner JSON repair]', error);
+		return JSON.parse(repaired) as T;
+	}
 }
 
 function getLocalParts(date: Date, timezone: string): Record<string, string> {
@@ -384,9 +448,146 @@ function clampConfidence(value: number | undefined): number {
 	return Math.max(0, Math.min(1, value));
 }
 
+function readLooseString(value: unknown, fallback = ''): string {
+	if (typeof value === 'string') return value.trim();
+	if (value && typeof value === 'object') {
+		const text = 'text' in value && typeof value.text === 'string' ? value.text : null;
+		if (text) return text.trim();
+	}
+	return fallback;
+}
+
+function coerceReminder(value: unknown): ReminderExpression | null {
+	if (!value || typeof value !== 'object') return null;
+	const amount =
+		'amount' in value && typeof value.amount === 'number' ? Math.max(1, value.amount) : null;
+	const unit = 'unit' in value && typeof value.unit === 'string' ? value.unit : null;
+	if (!amount || !unit) return null;
+	if (unit !== 'minute' && unit !== 'hour' && unit !== 'day' && unit !== 'week') return null;
+	return { amount, unit };
+}
+
+function parseIsoLikeDeadline(raw: string): DeadlineExpression | null {
+	const match = raw.trim().match(/^(\d{4})-(\d{2})-(\d{2})(?:[tT\s](\d{2}):(\d{2})(?::\d{2})?)?$/);
+	if (!match) return null;
+
+	return {
+		type: 'date',
+		year: Number(match[1]),
+		month: Number(match[2]),
+		day: Number(match[3]),
+		time: match[4] && match[5] ? `${match[4]}:${match[5]}` : null,
+	};
+}
+
+function coerceDeadline(value: unknown): DeadlineExpression | null {
+	if (!value || typeof value !== 'object') return null;
+	const type = 'type' in value && typeof value.type === 'string' ? value.type : null;
+	if (!type) return null;
+
+	if (type === 'string') {
+		const raw = readLooseString(value);
+		return raw ? parseIsoLikeDeadline(raw) : null;
+	}
+
+	if (type === 'relative') {
+		const amount = 'amount' in value && typeof value.amount === 'number' ? value.amount : null;
+		const unit = 'unit' in value && typeof value.unit === 'string' ? value.unit : null;
+		if (!amount || !unit) return null;
+		if (unit !== 'minute' && unit !== 'hour' && unit !== 'day' && unit !== 'week') return null;
+		return { type, amount, unit };
+	}
+
+	if (type === 'date') {
+		const day = 'day' in value && typeof value.day === 'number' ? value.day : null;
+		const month = 'month' in value && typeof value.month === 'number' ? value.month : null;
+		const year =
+			'year' in value && (typeof value.year === 'number' || value.year === null)
+				? value.year
+				: null;
+		const time = 'time' in value && typeof value.time === 'string' ? value.time : null;
+		if (!day || !month) return null;
+		return { type, day, month, year, time };
+	}
+
+	if (type === 'weekday') {
+		const weekday = 'weekday' in value && typeof value.weekday === 'number' ? value.weekday : null;
+		const time = 'time' in value && typeof value.time === 'string' ? value.time : null;
+		if (weekday === null) return null;
+		return { type, weekday, time };
+	}
+
+	if (type === 'today' || type === 'tomorrow' || type === 'day_after_tomorrow') {
+		const time = 'time' in value && typeof value.time === 'string' ? value.time : null;
+		return { type, time };
+	}
+
+	return null;
+}
+
+function coerceRecurrence(value: unknown): ParsedTaskRaw['recurrence'] {
+	if (!value || typeof value !== 'object') return null;
+	const period = 'period' in value && typeof value.period === 'string' ? value.period : null;
+	if (period !== 'weekly' && period !== 'monthly' && period !== 'yearly') return null;
+	return {
+		period,
+		dayOfWeek: 'dayOfWeek' in value && typeof value.dayOfWeek === 'number' ? value.dayOfWeek : null,
+		dayOfMonth:
+			'dayOfMonth' in value && typeof value.dayOfMonth === 'number' ? value.dayOfMonth : null,
+		time: 'time' in value && typeof value.time === 'string' ? value.time : null,
+	};
+}
+
+function coerceTask(task: unknown): ParsedTaskRaw | null {
+	if (!task || typeof task !== 'object') return null;
+	const title = readLooseString('task' in task ? task.task : undefined);
+	if (!title) return null;
+	return {
+		task: title,
+		project: readLooseString('project' in task ? task.project : undefined, DEFAULT_PROJECT_NAME),
+		deadline: coerceDeadline('deadline' in task ? task.deadline : null),
+		reminder: coerceReminder('reminder' in task ? task.reminder : null),
+		recurrence: coerceRecurrence('recurrence' in task ? task.recurrence : null),
+	};
+}
+
+function coerceAction(action: unknown): TaskActionRaw | null {
+	if (!action || typeof action !== 'object') return null;
+	const actionType = 'action' in action && typeof action.action === 'string' ? action.action : null;
+	if (
+		actionType !== 'delete' &&
+		actionType !== 'complete' &&
+		actionType !== 'rename' &&
+		actionType !== 'move_project' &&
+		actionType !== 'change_deadline' &&
+		actionType !== 'set_reminder'
+	) {
+		return null;
+	}
+
+	return {
+		action: actionType,
+		taskNumber:
+			'taskNumber' in action && typeof action.taskNumber === 'number' ? action.taskNumber : null,
+		taskName: readLooseString('taskName' in action ? action.taskName : undefined) || null,
+		newTitle: readLooseString('newTitle' in action ? action.newTitle : undefined) || undefined,
+		newProject:
+			readLooseString('newProject' in action ? action.newProject : undefined) || undefined,
+		newDeadline: coerceDeadline('newDeadline' in action ? action.newDeadline : null),
+		newReminderAt: coerceDeadline('newReminderAt' in action ? action.newReminderAt : null),
+		newReminderOffset: coerceReminder(
+			'newReminderOffset' in action ? action.newReminderOffset : null,
+		),
+	};
+}
+
 function sanitizePlannerResult(parsed: PlannerResultRaw): PlannerResultRaw {
-	const tasks = Array.isArray(parsed.tasks) ? parsed.tasks : [];
-	const actions = Array.isArray(parsed.actions) ? parsed.actions : [];
+	const tasks = (Array.isArray(parsed.tasks) ? parsed.tasks : [])
+		.map((task) => coerceTask(task))
+		.filter((task): task is ParsedTaskRaw => task !== null);
+	const actions = (Array.isArray(parsed.actions) ? parsed.actions : [])
+		.map((action) => coerceAction(action))
+		.filter((action): action is TaskActionRaw => action !== null);
 	let intent = parsed.intent;
 
 	if (!intent) {
