@@ -17,6 +17,7 @@ const ai = new OpenAI({ apiKey: config.aiApiKey, baseURL: config.aiBaseUrl });
 
 const SYSTEM_PROMPT = `You are a Telegram task bot assistant. Classify the user message and return JSON.
 Current weekday: {weekday}
+Current local date: {localDate}
 
 {taskContext}
 
@@ -43,6 +44,7 @@ DEADLINE types (do NOT calculate dates, just classify):
 - Relative: {"type":"relative","amount":<N>,"unit":"minute|hour|day|week"}
 - Date: {"type":"date","day":<1-31>,"month":<1-12>,"year":<YYYY or null>,"time":"HH:MM" or null}
 - Weekday: {"type":"weekday","weekday":<0-6 Sun-Sat>,"time":"HH:MM" or null}
+- Today: {"type":"today","time":"HH:MM" or null}
 - Tomorrow: {"type":"tomorrow","time":"HH:MM" or null}
 - Day after: {"type":"day_after_tomorrow","time":"HH:MM" or null}
 - null if no deadline
@@ -63,12 +65,14 @@ Return: {"intent":"actions","actions":[...]}
 
 Each action object:
 {
-  "action": "delete|complete|rename|move_project|change_deadline",
+  "action": "delete|complete|rename|move_project|change_deadline|set_reminder",
   "taskNumber": <number from list or null>,
   "taskName": "partial task name or null",
   "newTitle": "new title (for rename only)",
   "newProject": "project name (for move_project only)",
-  "newDeadline": <DeadlineExpression or null (for change_deadline only)>
+  "newDeadline": <DeadlineExpression or null (for change_deadline only)>,
+  "newReminderAt": <DeadlineExpression or null (for set_reminder absolute time only)>,
+  "newReminderOffset": <ReminderExpression or null (for set_reminder relative "за час/за день")>
 }
 
 Action examples:
@@ -78,11 +82,16 @@ Action examples:
 - "переименуй задачу 2 в Позвонить маме" → {"action":"rename","taskNumber":2,"taskName":null,"newTitle":"Позвонить маме"}
 - "перенеси задачу 1 в проект Работа" → {"action":"move_project","taskNumber":1,"taskName":null,"newProject":"Работа"}
 - "перенеси дедлайн задачи 2 на завтра" → {"action":"change_deadline","taskNumber":2,"taskName":null,"newDeadline":{"type":"tomorrow","time":null}}
+- "напомни сегодня в 18:00 про задачу 2" → {"action":"set_reminder","taskNumber":2,"taskName":null,"newReminderAt":{"type":"today","time":"18:00"},"newReminderOffset":null}
+- "напомни за час про задачи 2 и 3" → two set_reminder actions with newReminderOffset {"amount":1,"unit":"hour"}
 - "удали все задачи из General" → multiple delete actions for each task in General
 
 CRITICAL RULES:
 - "напомни через X <что-то>" = new_tasks with deadline relative, NOT an action.
+- "напомни ... про задачу N" or "напомни ... про задачи N и M" = actions with action "set_reminder".
 - "удали", "убери", "выполни", "готово", "переименуй", "перенеси в проект", "измени дедлайн" = actions.
+- "сегодня" must be returned as {"type":"today"} and interpreted relative to Current local date above.
+- Explicit dates like "6 марта 2026", "06.03.2026", "6 марта в 18:00" must preserve the exact day/month/year from the user text. Do not guess or swap day/month.
 - Multiple tasks/actions in one message → return ALL of them. Do NOT skip any.
 - When user sends a list with categories/headings followed by bullet points (•, -, *), EACH bullet point is a SEPARATE task. The heading is the project name. Parse ALL tasks from ALL categories.
 - For move_project: use EXACT project name from the "Current user tasks" list above (e.g. if list shows [ВПН], use "ВПН", NOT "VPN"). Match the existing project name precisely.
@@ -97,6 +106,12 @@ Output: {"intent":"new_tasks","tasks":[{"task":"Купить молоко","proj
 
 Input: "напомни через 2 минуты снять сковородку"
 Output: {"intent":"new_tasks","tasks":[{"task":"Снять сковородку","project":"${DEFAULT_PROJECT_NAME}","deadline":{"type":"relative","amount":2,"unit":"minute"},"reminder":null,"recurrence":null}]}
+
+Input: "напомни сегодня в 18:00 проверить задачи по боту"
+Output: {"intent":"new_tasks","tasks":[{"task":"Проверить задачи по боту","project":"${DEFAULT_PROJECT_NAME}","deadline":{"type":"today","time":"18:00"},"reminder":null,"recurrence":null}]}
+
+Input: "напомни 6 марта 2026 года в 18:00 проверить задачи по боту"
+Output: {"intent":"new_tasks","tasks":[{"task":"Проверить задачи по боту","project":"${DEFAULT_PROJECT_NAME}","deadline":{"type":"date","day":6,"month":3,"year":2026,"time":"18:00"},"reminder":null,"recurrence":null}]}
 
 Input: "удали задачу 3"
 Output: {"intent":"actions","actions":[{"action":"delete","taskNumber":3,"taskName":null}]}
@@ -115,6 +130,9 @@ Output: {"intent":"actions","actions":[{"action":"change_deadline","taskNumber":
 
 Input: "удали задачи 1 и 3"
 Output: {"intent":"actions","actions":[{"action":"delete","taskNumber":1,"taskName":null},{"action":"delete","taskNumber":3,"taskName":null}]}
+
+Input: "напомни сегодня в 18:00 про задачи 2 и 3"
+Output: {"intent":"actions","actions":[{"action":"set_reminder","taskNumber":2,"taskName":null,"newReminderAt":{"type":"today","time":"18:00"},"newReminderOffset":null},{"action":"set_reminder","taskNumber":3,"taskName":null,"newReminderAt":{"type":"today","time":"18:00"},"newReminderOffset":null}]}
 
 Input: "Work\\n- тесты\\n- баг"
 Output: {"intent":"new_tasks","tasks":[{"task":"Тесты","project":"Work","deadline":null,"reminder":null,"recurrence":null},{"task":"Баг","project":"Work","deadline":null,"reminder":null,"recurrence":null}]}
@@ -184,6 +202,152 @@ function parseHM(time: string | null, defaultH: number, defaultM: number): [numb
 	return [Number(segments[0] ?? defaultH), Number(segments[1] ?? defaultM)];
 }
 
+function pad2(value: number): string {
+	return String(value).padStart(2, '0');
+}
+
+function toTime(
+	hours: string | number | undefined,
+	minutes: string | number | undefined,
+): string | null {
+	if (hours === undefined || minutes === undefined) return null;
+	return `${pad2(Number(hours))}:${pad2(Number(minutes))}`;
+}
+
+function resolveRussianMonth(rawMonth: string): number | null {
+	const month = rawMonth.toLowerCase();
+	if (month.startsWith('январ')) return 1;
+	if (month.startsWith('феврал')) return 2;
+	if (month.startsWith('март')) return 3;
+	if (month.startsWith('апрел')) return 4;
+	if (month.startsWith('ма')) return 5;
+	if (month.startsWith('июн')) return 6;
+	if (month.startsWith('июл')) return 7;
+	if (month.startsWith('август')) return 8;
+	if (month.startsWith('сентябр')) return 9;
+	if (month.startsWith('октябр')) return 10;
+	if (month.startsWith('ноябр')) return 11;
+	if (month.startsWith('декабр')) return 12;
+	return null;
+}
+
+function extractExplicitDeadline(text: string): DeadlineExpression | null {
+	const todayMatch = text.match(/\bсегодня\b(?:\s*(?:в|на)?\s*(\d{1,2})[:.](\d{2}))?/i);
+	if (todayMatch) {
+		return {
+			type: 'today',
+			time: toTime(todayMatch[1], todayMatch[2]),
+		};
+	}
+
+	const numericDateMatch = text.match(
+		/\b(\d{1,2})[./](\d{1,2})(?:[./](\d{4}))?(?:\s*(?:года|г\.))?(?:\s*(?:в|на)?\s*(\d{1,2})[:.](\d{2}))?/i,
+	);
+	if (numericDateMatch) {
+		const day = Number(numericDateMatch[1]);
+		const month = Number(numericDateMatch[2]);
+		if (day >= 1 && day <= 31 && month >= 1 && month <= 12) {
+			return {
+				type: 'date',
+				day,
+				month,
+				year: numericDateMatch[3] ? Number(numericDateMatch[3]) : null,
+				time: toTime(numericDateMatch[4], numericDateMatch[5]),
+			};
+		}
+	}
+
+	const monthNameMatch = text.match(
+		/\b(\d{1,2})\s+(январ(?:я|ь)|феврал(?:я|ь)|март(?:а)?|апрел(?:я|ь)|ма(?:я|й)|июн(?:я|ь)|июл(?:я|ь)|август(?:а)?|сентябр(?:я|ь)|октябр(?:я|ь)|ноябр(?:я|ь)|декабр(?:я|ь))(?:\s+(\d{4}))?(?:\s*(?:года|г\.))?(?:\s*(?:в|на)?\s*(\d{1,2})[:.](\d{2}))?/i,
+	);
+	if (monthNameMatch) {
+		const month = resolveRussianMonth(monthNameMatch[2] ?? '');
+		if (month) {
+			return {
+				type: 'date',
+				day: Number(monthNameMatch[1]),
+				month,
+				year: monthNameMatch[3] ? Number(monthNameMatch[3]) : null,
+				time: toTime(monthNameMatch[4], monthNameMatch[5]),
+			};
+		}
+	}
+
+	return null;
+}
+
+function extractRelativeReminder(text: string): ReminderExpression | null {
+	const match = text.match(
+		/\bза\s+(?:(\d+)\s+)?(минут[ауы]?|минуту|час(?:а|ов)?|д(?:е)?нь|дня|дней|недел(?:ю|и|ь))\b/i,
+	);
+	if (!match) return null;
+
+	const unitRaw = match[2]?.toLowerCase() ?? '';
+	const amount = match[1] ? Number(match[1]) : 1;
+	let unit: TimeUnit | null = null;
+	if (unitRaw.startsWith('минут')) unit = 'minute';
+	if (unitRaw.startsWith('час')) unit = 'hour';
+	if (unitRaw === 'день' || unitRaw.startsWith('дн')) unit = 'day';
+	if (unitRaw.startsWith('недел')) unit = 'week';
+	return unit ? { amount, unit } : null;
+}
+
+function buildReminderActionsFromText(text: string): TaskActionRaw[] | null {
+	if (!/\bнапомн/i.test(text) || !/\bпро\b/i.test(text)) return null;
+
+	const referencePart = text.match(/\bпро\s+задач(?:у|и)?\s+(.+)$/i)?.[1];
+	if (!referencePart) return null;
+
+	const taskNumbers = Array.from(referencePart.matchAll(/\d+/g), (match) =>
+		Number(match[0]),
+	).filter((value) => Number.isFinite(value));
+	if (taskNumbers.length === 0) return null;
+
+	const newReminderOffset = extractRelativeReminder(text);
+	const newReminderAt = newReminderOffset ? null : extractExplicitDeadline(text);
+	if (!newReminderOffset && !newReminderAt) return null;
+
+	return taskNumbers.map((taskNumber) => ({
+		action: 'set_reminder',
+		taskNumber,
+		taskName: null,
+		newReminderAt,
+		newReminderOffset,
+	}));
+}
+
+function normalizeParsedResult(text: string, parsed: AIParseResult): AIParseResult {
+	const reminderActions = buildReminderActionsFromText(text);
+	if (reminderActions) {
+		return { intent: 'actions', actions: reminderActions };
+	}
+
+	const explicitDeadline = extractExplicitDeadline(text);
+	if (!explicitDeadline) return parsed;
+
+	if (parsed.intent === 'actions') {
+		return {
+			intent: 'actions',
+			actions: parsed.actions.map((action) => {
+				if (action.action === 'change_deadline') {
+					return { ...action, newDeadline: explicitDeadline };
+				}
+				if (action.action === 'set_reminder' && !action.newReminderOffset) {
+					return { ...action, newReminderAt: explicitDeadline };
+				}
+				return action;
+			}),
+		};
+	}
+
+	return {
+		intent: 'new_tasks',
+		tasks: parsed.tasks.map((task) =>
+			task.recurrence ? task : { ...task, deadline: explicitDeadline },
+		),
+	};
+}
+
 function normalizeUtcOffset(raw: string): string {
 	if (!raw || raw === '') return '+00:00';
 	const sign = raw[0] === '-' ? '-' : '+';
@@ -231,6 +395,13 @@ export function resolveDeadline(deadline: DeadlineExpression, now: Date, timezon
 		case 'relative': {
 			const ms = deadline.amount * UNIT_MS[deadline.unit];
 			return toIsoWithOffset(new Date(now.getTime() + ms), timezone);
+		}
+		case 'today': {
+			const [h, m] = parseHM(deadline.time, 23, 59);
+			return toIsoWithOffset(
+				buildDateInTimezone(timezone, localYear, localMonth, localDay, h, m),
+				timezone,
+			);
 		}
 		case 'tomorrow': {
 			const [h, m] = parseHM(deadline.time, 12, 0);
@@ -365,12 +536,12 @@ export async function parseUserMessage(
 		0,
 	);
 	const weekday = weekdays[localDate.getDay()] ?? 'Monday';
+	const localDateString = `${lp(localParts, 'year')}-${lp(localParts, 'month')}-${lp(localParts, 'day')}`;
 	const taskContext = buildTaskContext(currentTasks);
 
-	const systemPrompt = SYSTEM_PROMPT.replace('{weekday}', weekday).replace(
-		'{taskContext}',
-		taskContext,
-	);
+	const systemPrompt = SYSTEM_PROMPT.replace('{weekday}', weekday)
+		.replace('{localDate}', localDateString)
+		.replace('{taskContext}', taskContext);
 
 	const completion = await ai.chat.completions.create({
 		model: AI_CHAT_MODEL,
@@ -389,7 +560,7 @@ export async function parseUserMessage(
 
 	console.log('[AI raw response]', content);
 
-	const parsed = extractJson(content);
+	const parsed = normalizeParsedResult(text, extractJson(content));
 	console.log('[AI parsed]', JSON.stringify(parsed));
 
 	if (parsed.intent === 'actions') {

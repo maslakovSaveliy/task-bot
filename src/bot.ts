@@ -7,7 +7,7 @@ import { voiceModule } from './modules/voice/handlers.js';
 import type { BotContext, SessionData } from './types/index.js';
 
 function initialSession(): SessionData {
-	return { awaitingInput: false };
+	return { awaitingInput: false, taskListEditMode: false };
 }
 
 export function createBot(): Bot<BotContext> {

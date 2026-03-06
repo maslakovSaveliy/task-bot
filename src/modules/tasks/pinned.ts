@@ -10,8 +10,7 @@ interface RefreshOptions {
 async function buildTaskMessage(userId: number, timezone: string) {
 	const tasks = await getActiveTasks(userId);
 	const text = renderTaskList(tasks, timezone);
-	const keyboard = tasks.length > 0 ? buildTaskListKeyboard(tasks) : undefined;
-	return { text, keyboard };
+	return { text, tasks };
 }
 
 async function sendNewPinnedMessage(
@@ -45,7 +44,9 @@ export async function refreshPinnedMessage(
 ) {
 	const { resend = false } = options;
 	const user = await ensureUser(telegramId, chatId);
-	const { text, keyboard } = await buildTaskMessage(user.id, user.timezone);
+	const { text, tasks } = await buildTaskMessage(user.id, user.timezone);
+	const keyboard =
+		tasks.length > 0 ? buildTaskListKeyboard(tasks, ctx.session.taskListEditMode) : undefined;
 	const numericChatId = Number(chatId);
 
 	if (!resend && user.pinnedMessageId) {

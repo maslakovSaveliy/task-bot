@@ -142,9 +142,11 @@ tasksModule.command('help', async (ctx) => {
 			'/timezone — сменить часовой пояс\n' +
 			'/help — эта справка\n\n' +
 			'*Кнопки в закреплённом сообщении:*\n' +
-			'✅ — отметить выполненной\n' +
-			'🗑 — удалить задачу\n' +
-			'🔄 — обновить список\n\n' +
+			'🔄 — обновить список\n' +
+			'✏️ — показать ручное редактирование\n' +
+			'⬅️ — скрыть ручное редактирование\n' +
+			'✅ — отметить выполненной \\(в режиме редактирования\\)\n' +
+			'🗑 — удалить задачу \\(в режиме редактирования\\)\n\n' +
 			'*Повторяющиеся напоминания:*\n' +
 			'Еженедельные, ежемесячные и ежегодные\\. ' +
 			'Не показываются в основном списке — просто приходят уведомлением\\.\n' +
@@ -212,6 +214,14 @@ tasksModule.on('callback_query:data', async (ctx) => {
 			break;
 		case 'refresh':
 			await ctx.answerCallbackQuery({ text: '🔄 Обновлено!' });
+			break;
+		case 'edit':
+			ctx.session.taskListEditMode = true;
+			await ctx.answerCallbackQuery({ text: '✏️ Режим редактирования открыт' });
+			break;
+		case 'back':
+			ctx.session.taskListEditMode = false;
+			await ctx.answerCallbackQuery({ text: '⬅️ Ручные кнопки скрыты' });
 			break;
 	}
 

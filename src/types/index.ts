@@ -3,6 +3,7 @@ import type { Context, SessionFlavor } from 'grammy';
 
 export interface SessionData {
 	awaitingInput: boolean;
+	taskListEditMode: boolean;
 }
 
 export type BotContext = Context & SessionFlavor<SessionData> & ConversationFlavor<Context>;
@@ -15,6 +16,7 @@ export type DeadlineExpression =
 	| { type: 'relative'; amount: number; unit: TimeUnit }
 	| { type: 'date'; day: number; month: number; year: number | null; time: string | null }
 	| { type: 'weekday'; weekday: number; time: string | null }
+	| { type: 'today'; time: string | null }
 	| { type: 'tomorrow'; time: string | null }
 	| { type: 'day_after_tomorrow'; time: string | null };
 
@@ -59,7 +61,13 @@ export interface TaskWithProject {
 	};
 }
 
-export type TaskActionType = 'delete' | 'complete' | 'rename' | 'move_project' | 'change_deadline';
+export type TaskActionType =
+	| 'delete'
+	| 'complete'
+	| 'rename'
+	| 'move_project'
+	| 'change_deadline'
+	| 'set_reminder';
 
 export interface TaskActionRaw {
 	action: TaskActionType;
@@ -68,6 +76,8 @@ export interface TaskActionRaw {
 	newTitle?: string;
 	newProject?: string;
 	newDeadline?: DeadlineExpression | null;
+	newReminderAt?: DeadlineExpression | null;
+	newReminderOffset?: ReminderExpression | null;
 }
 
 export type AIParseResult =

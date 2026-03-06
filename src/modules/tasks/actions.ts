@@ -1,5 +1,11 @@
 import { resolveDeadline } from '../../services/ai.js';
-import type { ActionResult, TaskActionRaw, TaskWithProject } from '../../types/index.js';
+import type {
+	ActionResult,
+	ReminderExpression,
+	TaskActionRaw,
+	TaskWithProject,
+	TimeUnit,
+} from '../../types/index.js';
 import {
 	completeTask,
 	deleteTask,
@@ -8,6 +14,7 @@ import {
 	moveTaskToProject,
 	renameTask,
 	updateTaskDeadline,
+	updateTaskReminder,
 } from './service.js';
 
 const ACTION_LABELS: Record<string, string> = {
@@ -16,9 +23,16 @@ const ACTION_LABELS: Record<string, string> = {
 	rename: 'Переименована',
 	move_project: 'Перемещена',
 	change_deadline: 'Дедлайн изменён',
+	set_reminder: 'Напоминание установлено',
 };
 
 const FUZZY_THRESHOLD = 0.55;
+const UNIT_MS: Record<TimeUnit, number> = {
+	minute: 60_000,
+	hour: 3_600_000,
+	day: 86_400_000,
+	week: 604_800_000,
+};
 
 function editDistance(a: string, b: string): number {
 	const m = a.length;
@@ -112,6 +126,22 @@ function resolveTask(action: TaskActionRaw, tasks: TaskWithProject[]): TaskWithP
 	return undefined;
 }
 
+function formatDateTime(date: Date, timezone: string): string {
+	return date.toLocaleString('ru-RU', {
+		timeZone: timezone,
+		day: '2-digit',
+		month: '2-digit',
+		year: 'numeric',
+		hour: '2-digit',
+		minute: '2-digit',
+	});
+}
+
+function resolveReminderOffset(reminder: ReminderExpression, dueDate: Date): Date {
+	const ms = reminder.amount * UNIT_MS[reminder.unit];
+	return new Date(dueDate.getTime() - ms);
+}
+
 export async function resolveAndExecuteActions(
 	actions: TaskActionRaw[],
 	userId: number,
@@ -185,6 +215,46 @@ export async function resolveAndExecuteActions(
 						message: `📅 ${label}: "${task.title}" → ${dateStr}`,
 					});
 				}
+				break;
+			}
+			case 'set_reminder': {
+				let remindAt: Date | null = null;
+
+				if (action.newReminderOffset) {
+					if (!task.dueDate) {
+						results.push({
+							success: false,
+							message: `Нельзя поставить напоминание "за ..." для задачи без дедлайна: ${task.title}`,
+						});
+						break;
+					}
+					remindAt = resolveReminderOffset(action.newReminderOffset, task.dueDate);
+				} else if (action.newReminderAt) {
+					const now = new Date();
+					remindAt = new Date(resolveDeadline(action.newReminderAt, now, timezone));
+				}
+
+				if (!remindAt) {
+					results.push({
+						success: false,
+						message: `Не удалось определить время напоминания для задачи: ${task.title}`,
+					});
+					break;
+				}
+
+				if (remindAt.getTime() <= Date.now()) {
+					results.push({
+						success: false,
+						message: `Время напоминания уже прошло: ${task.title}`,
+					});
+					break;
+				}
+
+				await updateTaskReminder(task.id, userId, remindAt);
+				results.push({
+					success: true,
+					message: `🔔 ${label}: "${task.title}" → ${formatDateTime(remindAt, timezone)}`,
+				});
 				break;
 			}
 			default: {

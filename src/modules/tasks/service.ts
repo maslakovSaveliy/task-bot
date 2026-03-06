@@ -148,6 +148,13 @@ export async function updateTaskDeadline(taskId: number, userId: number, newDueD
 	});
 }
 
+export async function updateTaskReminder(taskId: number, userId: number, newRemindAt: Date | null) {
+	return prisma.task.updateMany({
+		where: { id: taskId, userId },
+		data: { remindAt: newRemindAt, isReminded: false },
+	});
+}
+
 export async function addTaskFromParsed(
 	telegramId: bigint,
 	chatId: bigint,
