@@ -10,6 +10,7 @@ import {
 	SECONDARY_CHAT_MODEL,
 } from '../config.js';
 import type {
+	ActionLogEntry,
 	DeadlineExpression,
 	ParsedTask,
 	ParsedTaskRaw,
@@ -20,6 +21,58 @@ import type {
 	TimeUnit,
 } from '../types/index.js';
 import { PLANNER_EXAMPLES } from './ai-examples.js';
+
+const ACTION_LABELS_EN: Record<string, string> = {
+	create: 'created',
+	delete: 'deleted',
+	complete: 'completed',
+	restore: 'restored',
+	rename: 'renamed',
+	move_project: 'moved',
+	change_deadline: 'changed deadline',
+	set_reminder: 'set reminder for',
+};
+
+function formatTimeAgo(date: Date, now: Date): string {
+	const diffMs = now.getTime() - date.getTime();
+	const minutes = Math.floor(diffMs / 60_000);
+	if (minutes < 1) return 'just now';
+	if (minutes < 60) return `${minutes} min ago`;
+	const hours = Math.floor(minutes / 60);
+	if (hours < 24) return `${hours}h ago`;
+	const days = Math.floor(hours / 24);
+	return `${days}d ago`;
+}
+
+function buildActionContext(actions: ActionLogEntry[], now: Date): string {
+	if (actions.length === 0) return 'No recent actions.';
+
+	const lines = ['Recent user actions (newest first):'];
+	for (let i = 0; i < actions.length; i++) {
+		const entry = actions[i];
+		if (!entry) continue;
+		const label = ACTION_LABELS_EN[entry.action] ?? entry.action;
+		const ago = formatTimeAgo(entry.createdAt, now);
+		let detail = `"${entry.taskTitle}"`;
+		if (entry.projectName) detail += ` (project: ${entry.projectName})`;
+
+		const meta = entry.metadata;
+		if (meta?.before && meta?.after) {
+			const changes: string[] = [];
+			const before = meta.before as Record<string, unknown>;
+			const after = meta.after as Record<string, unknown>;
+			for (const key of Object.keys(after)) {
+				if (before[key] !== after[key]) {
+					changes.push(`${key}: "${before[key]}" → "${after[key]}"`);
+				}
+			}
+			if (changes.length > 0) detail += ` [${changes.join(', ')}]`;
+		}
+
+		lines.push(`${i + 1}. [${ago}] ${label} ${detail}`);
+	}
+	return lines.join('\n');
+}
 
 type PlannerProvider = {
 	client: OpenAI;
@@ -56,6 +109,8 @@ Current local date: {localDate}
 
 {taskContext}
 
+{actionContext}
+
 Similar successful patterns:
 {fewShotExamples}
 
@@ -91,7 +146,7 @@ Task object schema:
 
 Action object schema:
 {
-  "action": "delete|complete|rename|move_project|change_deadline|set_reminder",
+  "action": "delete|complete|restore_last|rename|move_project|change_deadline|set_reminder",
   "taskNumber": <number or null>,
   "taskName": "partial task name or null",
   "newTitle": "new title or omitted",
@@ -118,6 +173,14 @@ Critical interpretation rules:
 - Explicit dates like "6 марта 2026", "06.03.2026", "6 марта в 18:00" must preserve exact day/month/year from the text.
 - "сегодня" must map to {"type":"today"}.
 - Never ask a clarification question. If nothing executable can be derived, return empty actions/tasks.
+
+Context resolution rules:
+- Use the "Recent user actions" to resolve contextual references.
+- If the user says "эту задачу", "ту задачу", "предыдущую", "последнюю" — match against the most recent action from the action log.
+- If the user says "верни", "отмени", "восстанови", "как было", "обратно" — produce action "restore_last".
+- If the user mentions a task by partial name that exists in the action log (recently deleted/completed) but not in the active task list — resolve using the action log.
+- Pronouns like "её", "его", "их" refer to the task(s) from the most recent action.
+- "туда же" means the same project as the most recent action.
 `;
 
 const UNIT_MS: Record<TimeUnit, number> = {
@@ -233,18 +296,6 @@ function parseHM(time: string | null, defaultH: number, defaultM: number): [numb
 	return [Number(segments[0] ?? defaultH), Number(segments[1] ?? defaultM)];
 }
 
-function pad2(value: number): string {
-	return String(value).padStart(2, '0');
-}
-
-function toTime(
-	hours: string | number | undefined,
-	minutes: string | number | undefined,
-): string | null {
-	if (hours === undefined || minutes === undefined) return null;
-	return `${pad2(Number(hours))}:${pad2(Number(minutes))}`;
-}
-
 function normalizeText(text: string): string {
 	return text
 		.toLowerCase()
@@ -310,137 +361,6 @@ function buildTaskContext(tasks: TaskWithProject[]): string {
 		}
 	}
 	return lines.join('\n');
-}
-
-function resolveRussianMonth(rawMonth: string): number | null {
-	const month = rawMonth.toLowerCase();
-	if (month.startsWith('январ')) return 1;
-	if (month.startsWith('феврал')) return 2;
-	if (month.startsWith('март')) return 3;
-	if (month.startsWith('апрел')) return 4;
-	if (month.startsWith('ма')) return 5;
-	if (month.startsWith('июн')) return 6;
-	if (month.startsWith('июл')) return 7;
-	if (month.startsWith('август')) return 8;
-	if (month.startsWith('сентябр')) return 9;
-	if (month.startsWith('октябр')) return 10;
-	if (month.startsWith('ноябр')) return 11;
-	if (month.startsWith('декабр')) return 12;
-	return null;
-}
-
-function extractExplicitDeadline(text: string): DeadlineExpression | null {
-	const todayMatch = text.match(/\bсегодня\b(?:\s*(?:в|на)?\s*(\d{1,2})[:.](\d{2}))?/i);
-	if (todayMatch) {
-		return {
-			type: 'today',
-			time: toTime(todayMatch[1], todayMatch[2]),
-		};
-	}
-
-	const numericDateMatch = text.match(
-		/\b(\d{1,2})[./](\d{1,2})(?:[./](\d{4}))?(?:\s*(?:года|г\.))?(?:\s*(?:в|на)?\s*(\d{1,2})[:.](\d{2}))?/i,
-	);
-	if (numericDateMatch) {
-		const day = Number(numericDateMatch[1]);
-		const month = Number(numericDateMatch[2]);
-		if (day >= 1 && day <= 31 && month >= 1 && month <= 12) {
-			return {
-				type: 'date',
-				day,
-				month,
-				year: numericDateMatch[3] ? Number(numericDateMatch[3]) : null,
-				time: toTime(numericDateMatch[4], numericDateMatch[5]),
-			};
-		}
-	}
-
-	const monthNameMatch = text.match(
-		/\b(\d{1,2})\s+(январ(?:я|ь)|феврал(?:я|ь)|март(?:а)?|апрел(?:я|ь)|ма(?:я|й)|июн(?:я|ь)|июл(?:я|ь)|август(?:а)?|сентябр(?:я|ь)|октябр(?:я|ь)|ноябр(?:я|ь)|декабр(?:я|ь))(?:\s+(\d{4}))?(?:\s*(?:года|г\.))?(?:\s*(?:в|на)?\s*(\d{1,2})[:.](\d{2}))?/i,
-	);
-	if (monthNameMatch) {
-		const month = resolveRussianMonth(monthNameMatch[2] ?? '');
-		if (month) {
-			return {
-				type: 'date',
-				day: Number(monthNameMatch[1]),
-				month,
-				year: monthNameMatch[3] ? Number(monthNameMatch[3]) : null,
-				time: toTime(monthNameMatch[4], monthNameMatch[5]),
-			};
-		}
-	}
-
-	return null;
-}
-
-function extractRelativeReminder(text: string): ReminderExpression | null {
-	const match = text.match(
-		/\bза\s+(?:(\d+)\s+)?(минут[ауы]?|минуту|час(?:а|ов)?|д(?:е)?нь|дня|дней|недел(?:ю|и|ь))\b/i,
-	);
-	if (!match) return null;
-
-	const unitRaw = match[2]?.toLowerCase() ?? '';
-	const amount = match[1] ? Number(match[1]) : 1;
-	let unit: TimeUnit | null = null;
-	if (unitRaw.startsWith('минут')) unit = 'minute';
-	if (unitRaw.startsWith('час')) unit = 'hour';
-	if (unitRaw === 'день' || unitRaw.startsWith('дн')) unit = 'day';
-	if (unitRaw.startsWith('недел')) unit = 'week';
-	return unit ? { amount, unit } : null;
-}
-
-function buildReminderActionsFromText(text: string): TaskActionRaw[] | null {
-	if (!/\bнапомн/i.test(text) || !/\bпро\b/i.test(text)) return null;
-
-	const referencePart = text.match(/\bпро\s+задач(?:у|и)?\s+(.+)$/i)?.[1];
-	if (!referencePart) return null;
-
-	const taskNumbers = Array.from(referencePart.matchAll(/\d+/g), (match) =>
-		Number(match[0]),
-	).filter((value) => Number.isFinite(value));
-	if (taskNumbers.length === 0) return null;
-
-	const newReminderOffset = extractRelativeReminder(text);
-	const newReminderAt = newReminderOffset ? null : extractExplicitDeadline(text);
-	if (!newReminderOffset && !newReminderAt) return null;
-
-	return taskNumbers.map((taskNumber) => ({
-		action: 'set_reminder',
-		taskNumber,
-		taskName: null,
-		newReminderAt,
-		newReminderOffset,
-	}));
-}
-
-function extractTaskNumbers(text: string): number[] {
-	return Array.from(text.matchAll(/\b\d+\b/g), (match) => Number(match[0])).filter((value) =>
-		Number.isFinite(value),
-	);
-}
-
-function buildDirectActionsFromText(text: string): TaskActionRaw[] | null {
-	const taskNumbers = extractTaskNumbers(text);
-	if (taskNumbers.length === 0) return null;
-
-	if (/\b(удали|удалить|убери|убрать|снеси)\b/i.test(text)) {
-		return taskNumbers.map((taskNumber) => ({
-			action: 'delete',
-			taskNumber,
-			taskName: null,
-		}));
-	}
-
-	if (/\b(готово|готова|сделано|выполни|выполнено|закрой|заверши)\b/i.test(text)) {
-		return taskNumbers.map((taskNumber) => ({
-			action: 'complete',
-			taskNumber,
-			taskName: null,
-		}));
-	}
-
-	return null;
 }
 
 function clampConfidence(value: number | undefined): number {
@@ -557,6 +477,7 @@ function coerceAction(action: unknown): TaskActionRaw | null {
 	if (
 		actionType !== 'delete' &&
 		actionType !== 'complete' &&
+		actionType !== 'restore_last' &&
 		actionType !== 'rename' &&
 		actionType !== 'move_project' &&
 		actionType !== 'change_deadline' &&
@@ -610,53 +531,6 @@ function sanitizePlannerResult(parsed: PlannerResultRaw): PlannerResultRaw {
 		needsClarification: Boolean(parsed.needsClarification || intent === 'clarify'),
 		clarificationQuestion: parsed.clarificationQuestion ?? null,
 	};
-}
-
-function normalizeParsedResult(text: string, parsed: PlannerResultRaw): PlannerResultRaw {
-	const normalized = sanitizePlannerResult(parsed);
-	const directActions = buildDirectActionsFromText(text);
-	if (directActions) {
-		return sanitizePlannerResult({
-			...normalized,
-			intent: 'actions',
-			actions: directActions,
-			tasks: [],
-			confidence: Math.max(normalized.confidence ?? 0.5, 0.95),
-			needsClarification: false,
-			clarificationQuestion: null,
-		});
-	}
-
-	const reminderActions = buildReminderActionsFromText(text);
-	if (reminderActions) {
-		return sanitizePlannerResult({
-			...normalized,
-			intent: 'actions',
-			actions: reminderActions,
-			tasks: [],
-			confidence: Math.max(normalized.confidence ?? 0.5, 0.9),
-			needsClarification: false,
-			clarificationQuestion: null,
-		});
-	}
-
-	const explicitDeadline = extractExplicitDeadline(text);
-	if (!explicitDeadline) return normalized;
-
-	const tasks = (normalized.tasks ?? []).map((task) =>
-		task.recurrence ? task : { ...task, deadline: explicitDeadline },
-	);
-	const actions = (normalized.actions ?? []).map((action) => {
-		if (action.action === 'change_deadline') {
-			return { ...action, newDeadline: explicitDeadline };
-		}
-		if (action.action === 'set_reminder' && !action.newReminderOffset) {
-			return { ...action, newReminderAt: explicitDeadline };
-		}
-		return action;
-	});
-
-	return sanitizePlannerResult({ ...normalized, tasks, actions });
 }
 
 function hasConflictingActions(actions: TaskActionRaw[]): boolean {
@@ -874,7 +748,7 @@ async function callPlanner(
 	}
 
 	console.log(`[AI planner raw][${provider.label}:${model}]`, content);
-	const parsed = normalizeParsedResult(text, extractJson<PlannerResultRaw>(content));
+	const parsed = sanitizePlannerResult(extractJson<PlannerResultRaw>(content));
 	console.log(`[AI planner parsed][${provider.label}:${model}]`, JSON.stringify(parsed));
 	return { raw: content, parsed };
 }
@@ -931,6 +805,7 @@ export async function parseUserMessage(
 	text: string,
 	timezone: string,
 	currentTasks: TaskWithProject[],
+	recentActions: ActionLogEntry[],
 ): Promise<UserMessageResult> {
 	const now = new Date();
 
@@ -947,11 +822,13 @@ export async function parseUserMessage(
 	const weekday = weekdays[localDate.getDay()] ?? 'Monday';
 	const localDateString = `${lp(localParts, 'year')}-${lp(localParts, 'month')}-${lp(localParts, 'day')}`;
 	const taskContext = buildTaskContext(currentTasks);
+	const actionContext = buildActionContext(recentActions, now);
 	const fewShotExamples = buildFewShotExamples(text);
 
 	const systemPrompt = PLANNER_SYSTEM_PROMPT.replace('{weekday}', weekday)
 		.replace('{localDate}', localDateString)
 		.replace('{taskContext}', taskContext)
+		.replace('{actionContext}', actionContext)
 		.replace('{fewShotExamples}', fewShotExamples);
 
 	let chosen: { raw: string; parsed: PlannerResultRaw };

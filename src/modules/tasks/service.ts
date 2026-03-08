@@ -39,20 +39,28 @@ export async function createTask(
 
 export async function completeTask(taskId: number, userId: number) {
 	return prisma.task.updateMany({
-		where: { id: taskId, userId },
-		data: { isCompleted: true },
+		where: { id: taskId, userId, isDeleted: false },
+		data: { isCompleted: true, completedAt: new Date() },
 	});
 }
 
 export async function deleteTask(taskId: number, userId: number) {
-	return prisma.task.deleteMany({
+	return prisma.task.updateMany({
+		where: { id: taskId, userId, isDeleted: false },
+		data: { isDeleted: true, deletedAt: new Date() },
+	});
+}
+
+export async function getTaskById(taskId: number, userId: number) {
+	return prisma.task.findFirst({
 		where: { id: taskId, userId },
+		include: { project: true },
 	});
 }
 
 export async function getActiveTasks(userId: number): Promise<TaskWithProject[]> {
 	return prisma.task.findMany({
-		where: { userId, isCompleted: false },
+		where: { userId, isCompleted: false, isDeleted: false },
 		include: { project: true },
 		orderBy: [{ project: { name: 'asc' } }, { dueDate: 'asc' }, { createdAt: 'asc' }],
 	});
@@ -63,6 +71,7 @@ export async function getPendingReminders() {
 	return prisma.task.findMany({
 		where: {
 			isCompleted: false,
+			isDeleted: false,
 			isReminded: false,
 			remindAt: { lte: now },
 		},
@@ -82,6 +91,7 @@ export async function getPendingDueReminders() {
 	return prisma.task.findMany({
 		where: {
 			isCompleted: false,
+			isDeleted: false,
 			isDueReminded: { equals: false },
 			dueDate: { lte: now },
 		},
@@ -153,6 +163,37 @@ export async function updateTaskReminder(taskId: number, userId: number, newRemi
 		where: { id: taskId, userId },
 		data: { remindAt: newRemindAt, isReminded: false },
 	});
+}
+
+export async function restoreTask(taskId: number, userId: number) {
+	return prisma.task.updateMany({
+		where: { id: taskId, userId },
+		data: {
+			isCompleted: false,
+			completedAt: null,
+			isDeleted: false,
+			deletedAt: null,
+		},
+	});
+}
+
+export async function getLastRestorableTask(userId: number) {
+	const [lastDeleted, lastCompleted] = await Promise.all([
+		prisma.task.findFirst({
+			where: { userId, isDeleted: true },
+			include: { project: true },
+			orderBy: { deletedAt: 'desc' },
+		}),
+		prisma.task.findFirst({
+			where: { userId, isCompleted: true, isDeleted: false },
+			include: { project: true },
+			orderBy: { completedAt: 'desc' },
+		}),
+	]);
+
+	const deletedAt = lastDeleted?.deletedAt?.getTime() ?? -1;
+	const completedAt = lastCompleted?.completedAt?.getTime() ?? -1;
+	return deletedAt >= completedAt ? lastDeleted : lastCompleted;
 }
 
 export async function addTaskFromParsed(

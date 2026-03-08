@@ -2,6 +2,7 @@ import { Composer } from 'grammy';
 import { parseUserMessage } from '../../services/ai.js';
 import { isSTTConfigured, transcribeAudio } from '../../services/stt.js';
 import type { BotContext } from '../../types/index.js';
+import { getContextWindow, getRecentActions } from '../action-log/service.js';
 import { executeParsedMessage } from '../tasks/message-flow.js';
 import { refreshPinnedMessage } from '../tasks/pinned.js';
 import { ensureUser, getActiveTasks } from '../tasks/service.js';
@@ -44,8 +45,17 @@ voiceModule.on('message:voice', async (ctx) => {
 		);
 
 		const user = await ensureUser(telegramId, chatId);
-		const currentTasks = await getActiveTasks(user.id);
-		const result = await parseUserMessage(transcription.text, user.timezone, currentTasks);
+		const contextWindow = getContextWindow(transcription.text);
+		const [currentTasks, recentActions] = await Promise.all([
+			getActiveTasks(user.id),
+			getRecentActions(user.id, contextWindow),
+		]);
+		const result = await parseUserMessage(
+			transcription.text,
+			user.timezone,
+			currentTasks,
+			recentActions,
+		);
 		const execution = await executeParsedMessage({
 			result,
 			telegramId,

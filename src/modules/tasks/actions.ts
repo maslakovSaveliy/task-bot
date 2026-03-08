@@ -6,13 +6,16 @@ import type {
 	TaskWithProject,
 	TimeUnit,
 } from '../../types/index.js';
+import { logAction } from '../action-log/service.js';
 import {
 	completeTask,
 	deleteTask,
 	findExistingProject,
 	getActiveTasks,
+	getLastRestorableTask,
 	moveTaskToProject,
 	renameTask,
+	restoreTask,
 	updateTaskDeadline,
 	updateTaskReminder,
 } from './service.js';
@@ -20,6 +23,7 @@ import {
 const ACTION_LABELS: Record<string, string> = {
 	delete: 'Удалена',
 	complete: 'Выполнена',
+	restore_last: 'Восстановлена',
 	rename: 'Переименована',
 	move_project: 'Перемещена',
 	change_deadline: 'Дедлайн изменён',
@@ -178,6 +182,22 @@ export async function resolveAndExecuteActions(
 	const results: ActionResult[] = [];
 
 	for (const action of actions) {
+		if (action.action === 'restore_last') {
+			const lastTask = await getLastRestorableTask(userId);
+			if (!lastTask) {
+				results.push({ success: false, message: 'Нет задач для восстановления' });
+				continue;
+			}
+
+			await restoreTask(lastTask.id, userId);
+			await logAction(userId, 'restore', lastTask.id, lastTask.title, lastTask.project.name, null);
+			results.push({
+				success: true,
+				message: `↩️ ${ACTION_LABELS.restore_last}: ${lastTask.title}`,
+			});
+			continue;
+		}
+
 		const { task, error } = resolveTask(action, tasks);
 		if (error) {
 			results.push({ success: false, message: error });
@@ -194,17 +214,23 @@ export async function resolveAndExecuteActions(
 		switch (action.action) {
 			case 'delete': {
 				await deleteTask(task.id, userId);
+				await logAction(userId, 'delete', task.id, task.title, task.project.name, null);
 				results.push({ success: true, message: `🗑 ${label}: ${task.title}` });
 				break;
 			}
 			case 'complete': {
 				await completeTask(task.id, userId);
+				await logAction(userId, 'complete', task.id, task.title, task.project.name, null);
 				results.push({ success: true, message: `✅ ${label}: ${task.title}` });
 				break;
 			}
 			case 'rename': {
 				const newTitle = action.newTitle ?? task.title;
 				await renameTask(task.id, userId, newTitle);
+				await logAction(userId, 'rename', task.id, task.title, task.project.name, {
+					before: { title: task.title },
+					after: { title: newTitle },
+				});
 				results.push({
 					success: true,
 					message: `✏️ ${label}: "${task.title}" → "${newTitle}"`,
@@ -216,6 +242,10 @@ export async function resolveAndExecuteActions(
 				await moveTaskToProject(task.id, userId, requestedProject);
 				const resolved = await findExistingProject(userId, requestedProject);
 				const actualName = resolved?.name ?? requestedProject;
+				await logAction(userId, 'move_project', task.id, task.title, actualName, {
+					before: { project: task.project.name },
+					after: { project: actualName },
+				});
 				results.push({
 					success: true,
 					message: `📂 ${label}: "${task.title}" → ${actualName}`,
@@ -225,6 +255,10 @@ export async function resolveAndExecuteActions(
 			case 'change_deadline': {
 				if (!action.newDeadline) {
 					await updateTaskDeadline(task.id, userId, null);
+					await logAction(userId, 'change_deadline', task.id, task.title, task.project.name, {
+						before: { dueDate: task.dueDate?.toISOString() ?? null },
+						after: { dueDate: null },
+					});
 					results.push({
 						success: true,
 						message: `📅 Дедлайн убран: ${task.title}`,
@@ -233,6 +267,10 @@ export async function resolveAndExecuteActions(
 					const now = new Date();
 					const isoStr = resolveDeadline(action.newDeadline, now, timezone);
 					await updateTaskDeadline(task.id, userId, new Date(isoStr));
+					await logAction(userId, 'change_deadline', task.id, task.title, task.project.name, {
+						before: { dueDate: task.dueDate?.toISOString() ?? null },
+						after: { dueDate: isoStr },
+					});
 					const dateStr = new Date(isoStr).toLocaleString('ru-RU', {
 						timeZone: timezone,
 						day: '2-digit',
@@ -282,6 +320,10 @@ export async function resolveAndExecuteActions(
 				}
 
 				await updateTaskReminder(task.id, userId, remindAt);
+				await logAction(userId, 'set_reminder', task.id, task.title, task.project.name, {
+					before: { remindAt: task.remindAt?.toISOString() ?? null },
+					after: { remindAt: remindAt.toISOString() },
+				});
 				results.push({
 					success: true,
 					message: `🔔 ${label}: "${task.title}" → ${formatDateTime(remindAt, timezone)}`,

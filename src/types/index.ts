@@ -64,6 +64,7 @@ export interface TaskWithProject {
 export type TaskActionType =
 	| 'delete'
 	| 'complete'
+	| 'restore_last'
 	| 'rename'
 	| 'move_project'
 	| 'change_deadline'
@@ -98,4 +99,32 @@ export interface PlannerResultRaw {
 	confidence?: number;
 	needsClarification?: boolean;
 	clarificationQuestion?: string | null;
+}
+
+export type LoggedActionType =
+	| 'create'
+	| 'delete'
+	| 'complete'
+	| 'restore'
+	| 'rename'
+	| 'move_project'
+	| 'change_deadline'
+	| 'set_reminder';
+
+export interface ActionLogMetadata {
+	before?: Record<string, unknown>;
+	after?: Record<string, unknown>;
+	dueDate?: string | null;
+	remindAt?: string | null;
+}
+
+export interface ActionLogEntry {
+	id: number;
+	userId: number;
+	action: LoggedActionType;
+	taskId: number | null;
+	taskTitle: string;
+	projectName: string | null;
+	metadata: ActionLogMetadata | null;
+	createdAt: Date;
 }

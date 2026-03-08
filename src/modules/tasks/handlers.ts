@@ -2,6 +2,8 @@ import { find as findTimezone } from 'geo-tz';
 import { Composer, InlineKeyboard } from 'grammy';
 import { parseUserMessage } from '../../services/ai.js';
 import type { BotContext } from '../../types/index.js';
+import { getContextWindow, getRecentActions, logAction } from '../action-log/service.js';
+import { resolveAndExecuteActions } from './actions.js';
 import { parseCallbackData } from './keyboard.js';
 import { executeParsedMessage } from './message-flow.js';
 import { refreshPinnedMessage } from './pinned.js';
@@ -10,6 +12,7 @@ import {
 	deleteTask,
 	ensureUser,
 	getActiveTasks,
+	getTaskById,
 	updateUserTimezone,
 } from './service.js';
 
@@ -88,6 +91,7 @@ function buildTimezoneKeyboard(): InlineKeyboard {
 const WELCOME_COMMANDS =
 	'Команды:\n' +
 	'/tasks — показать список задач\n' +
+	'/undo — отменить последнее удаление или выполнение\n' +
 	'/projects — список проектов\n' +
 	'/recurring — повторяющиеся напоминания\n' +
 	'/timezone — сменить часовой пояс\n';
@@ -128,6 +132,7 @@ tasksModule.command('help', async (ctx) => {
 			'• "Раз в месяц 1 числа оплата квартиры"\n\n' +
 			'*Управление задачами текстом/голосом:*\n' +
 			'• "удали задачу 3"\n' +
+			'• "отмени последнее действие"\n' +
 			'• "задача купить молоко готова"\n' +
 			'• "переименуй задачу 1 в Позвонить маме"\n' +
 			'• "перенеси задачу 2 в проект Работа"\n' +
@@ -136,6 +141,7 @@ tasksModule.command('help', async (ctx) => {
 			'*Команды:*\n' +
 			'/start — запуск бота и выбор часового пояса\n' +
 			'/tasks — показать список активных задач\n' +
+			'/undo — отменить последнее удаление или выполнение\n' +
 			'/projects — список проектов с количеством задач\n' +
 			'/recurring — управление повторяющимися напоминаниями\n' +
 			'/timezone — сменить часовой пояс\n' +
@@ -163,6 +169,29 @@ tasksModule.command('timezone', async (ctx) => {
 tasksModule.command('tasks', async (ctx) => {
 	const telegramId = BigInt(ctx.from?.id ?? 0);
 	const chatId = BigInt(ctx.chat.id);
+	await refreshPinnedMessage(ctx, telegramId, chatId);
+});
+
+tasksModule.command('undo', async (ctx) => {
+	const telegramId = BigInt(ctx.from?.id ?? 0);
+	const chatId = BigInt(ctx.chat.id);
+	const user = await ensureUser(telegramId, chatId);
+	const results = await resolveAndExecuteActions(
+		[
+			{
+				action: 'restore_last',
+				taskNumber: null,
+				taskName: null,
+			},
+		],
+		user.id,
+		user.timezone,
+	);
+
+	const text = results
+		.map((entry) => (entry.success ? entry.message : `⚠️ ${entry.message}`))
+		.join('\n');
+	await ctx.reply(text);
 	await refreshPinnedMessage(ctx, telegramId, chatId);
 });
 
@@ -203,14 +232,31 @@ tasksModule.on('callback_query:data', async (ctx) => {
 	const user = await ensureUser(telegramId, chatId);
 
 	switch (parsed.action) {
-		case 'done':
-			await completeTask(parsed.taskId, user.id);
+		case 'done': {
+			const doneTask = await getTaskById(parsed.taskId, user.id);
+			const doneResult = await completeTask(parsed.taskId, user.id);
+			if (doneTask && doneResult.count > 0) {
+				await logAction(
+					user.id,
+					'complete',
+					doneTask.id,
+					doneTask.title,
+					doneTask.project.name,
+					null,
+				);
+			}
 			await ctx.answerCallbackQuery({ text: '✅ Задача выполнена!' });
 			break;
-		case 'delete':
-			await deleteTask(parsed.taskId, user.id);
+		}
+		case 'delete': {
+			const delTask = await getTaskById(parsed.taskId, user.id);
+			const delResult = await deleteTask(parsed.taskId, user.id);
+			if (delTask && delResult.count > 0) {
+				await logAction(user.id, 'delete', delTask.id, delTask.title, delTask.project.name, null);
+			}
 			await ctx.answerCallbackQuery({ text: '🗑 Задача удалена!' });
 			break;
+		}
 		case 'refresh':
 			await ctx.answerCallbackQuery({ text: '🔄 Обновлено!' });
 			break;
@@ -267,8 +313,12 @@ tasksModule.on('message:text', async (ctx) => {
 
 	try {
 		const user = await ensureUser(telegramId, chatId);
-		const currentTasks = await getActiveTasks(user.id);
-		const result = await parseUserMessage(text, user.timezone, currentTasks);
+		const contextWindow = getContextWindow(text);
+		const [currentTasks, recentActions] = await Promise.all([
+			getActiveTasks(user.id),
+			getRecentActions(user.id, contextWindow),
+		]);
+		const result = await parseUserMessage(text, user.timezone, currentTasks, recentActions);
 		const execution = await executeParsedMessage({
 			result,
 			telegramId,

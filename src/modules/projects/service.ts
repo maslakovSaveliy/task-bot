@@ -5,7 +5,7 @@ export async function getProjectsWithTaskCount(userId: number) {
 		where: { userId },
 		include: {
 			_count: {
-				select: { tasks: { where: { isCompleted: false } } },
+				select: { tasks: { where: { isCompleted: false, isDeleted: false } } },
 			},
 		},
 		orderBy: { name: 'asc' },

@@ -1,4 +1,5 @@
 import type { UserMessageResult } from '../../services/ai.js';
+import { logAction } from '../action-log/service.js';
 import { resolveAndExecuteActions } from './actions.js';
 import { addTaskFromParsed } from './service.js';
 
@@ -48,7 +49,7 @@ async function createTaskLines(
 			continue;
 		}
 
-		await addTaskFromParsed(
+		const createdTask = await addTaskFromParsed(
 			telegramId,
 			chatId,
 			parsed.task,
@@ -56,6 +57,11 @@ async function createTaskLines(
 			parsed.dueDate,
 			parsed.remindAt,
 		);
+
+		await logAction(userId, 'create', createdTask.id, parsed.task, parsed.project, {
+			dueDate: parsed.dueDate,
+			remindAt: parsed.remindAt,
+		});
 
 		let taskLine = `📁 ${parsed.project}\n📝 ${parsed.task}`;
 		if (parsed.dueDate) {
