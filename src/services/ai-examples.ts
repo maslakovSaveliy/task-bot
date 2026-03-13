@@ -65,4 +65,25 @@ export const PLANNER_EXAMPLES: PlannerExample[] = [
 			'{"intent":"actions","actions":[{"action":"complete","taskNumber":null,"taskName":"купить молоко"}],"confidence":0.98,"needsClarification":false,"clarificationQuestion":null}',
 		tags: ['complete', 'by_name'],
 	},
+	{
+		input: 'поменяй время на 16 часов',
+		intent: 'actions',
+		output:
+			'{"intent":"actions","actions":[{"action":"change_deadline","taskNumber":null,"taskName":"Отправить отцу 3000","newDeadline":{"type":"tomorrow","time":"16:00"}}],"confidence":0.92,"needsClarification":false,"clarificationQuestion":null}',
+		tags: ['implicit_ref', 'change_deadline', 'context'],
+	},
+	{
+		input: 'перенеси на послезавтра',
+		intent: 'actions',
+		output:
+			'{"intent":"actions","actions":[{"action":"change_deadline","taskNumber":null,"taskName":"Купить молоко","newDeadline":{"type":"day_after_tomorrow","time":null}}],"confidence":0.90,"needsClarification":false,"clarificationQuestion":null}',
+		tags: ['implicit_ref', 'change_deadline', 'context'],
+	},
+	{
+		input: 'верни обратно',
+		intent: 'actions',
+		output:
+			'{"intent":"actions","actions":[{"action":"restore_last","taskNumber":null,"taskName":null}],"confidence":0.99,"needsClarification":false,"clarificationQuestion":null}',
+		tags: ['restore', 'undo', 'context'],
+	},
 ];

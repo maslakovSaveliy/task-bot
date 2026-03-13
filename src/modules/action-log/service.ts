@@ -6,7 +6,7 @@ const DEFAULT_CONTEXT_WINDOW = 5;
 const EXTENDED_CONTEXT_WINDOW = 15;
 
 const CONTEXTUAL_MARKERS =
-	/\b(эту|эта|эти|это|ту|та|те|того|той|тех|предыдущ\w+|последн\w+|прошл\w+|верни|отмени|восстанови|как\s+было|обратно|её|его|их|туда\s+же)\b/i;
+	/\b(эту|эта|эти|это|ту|та|те|того|той|тех|предыдущ\w+|последн\w+|прошл\w+|верни|отмени|восстанови|как\s+было|обратно|её|его|их|туда\s+же|поменяй|измени|сдвинь|перенеси|переставь|убери|сними)\b/i;
 
 export function detectContextualReferences(text: string): boolean {
 	return CONTEXTUAL_MARKERS.test(text);

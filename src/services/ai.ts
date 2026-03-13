@@ -181,6 +181,8 @@ Context resolution rules:
 - If the user mentions a task by partial name that exists in the action log (recently deleted/completed) but not in the active task list — resolve using the action log.
 - Pronouns like "её", "его", "их" refer to the task(s) from the most recent action.
 - "туда же" means the same project as the most recent action.
+- IMPORTANT: If the message is a modification command (change time, rename, move, etc.) WITHOUT an explicit task reference (no task number, no task name), it is an ACTION on the task from the most recent action in the log, NOT a new task. Use taskName from the most recent action log entry to target the task.
+- Examples of implicit references: "поменяй время на 16:00", "перенеси на завтра", "измени название на ...", "сдвинь дедлайн". These are all actions, not new tasks.
 `;
 
 const UNIT_MS: Record<TimeUnit, number> = {
