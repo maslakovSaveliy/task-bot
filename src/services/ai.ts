@@ -21,6 +21,7 @@ import type {
 	TimeUnit,
 } from '../types/index.js';
 import { PLANNER_EXAMPLES } from './ai-examples.js';
+import { buildPlannerRequest } from './planner-request.js';
 
 const ACTION_LABELS_EN: Record<string, string> = {
 	create: 'created',
@@ -726,21 +727,7 @@ async function callPlanner(
 	systemPrompt: string,
 	text: string,
 ): Promise<{ raw: string; parsed: PlannerResultRaw }> {
-	const request: OpenAI.Chat.ChatCompletionCreateParamsNonStreaming = {
-		model,
-		stream: false,
-		messages: [
-			{ role: 'system', content: systemPrompt },
-			{ role: 'user', content: text },
-		],
-	};
-
-	// Gemini's OpenAI-compatible endpoint is stricter than OpenAI itself.
-	// A minimal payload avoids spurious 400s on otherwise valid requests.
-	if (!provider.isGemini) {
-		request.temperature = 0.1;
-		request.max_tokens = 4096;
-	}
+	const request = buildPlannerRequest(model, provider.isGemini, systemPrompt, text);
 
 	const completion = await provider.client.chat.completions.create(request);
 
